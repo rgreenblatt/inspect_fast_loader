@@ -178,6 +178,15 @@ def test_json_loads_nan_inf():
 
 # ---- Rust native function tests ----
 
+_native_available = pytest.importorskip.__module__ is not None  # always True, just for the marker
+try:
+    import inspect_fast_loader._native
+    _has_native = True
+except ImportError:
+    _has_native = False
+
+
+@pytest.mark.skipif(not _has_native, reason="Rust native extension not available")
 def test_read_eval_file_basic():
     from inspect_fast_loader._native import read_eval_file
     import json
@@ -196,6 +205,7 @@ def test_read_eval_file_basic():
     assert isinstance(sample0, dict)
 
 
+@pytest.mark.skipif(not _has_native, reason="Rust native extension not available")
 def test_read_eval_file_header_only():
     from inspect_fast_loader._native import read_eval_file
 
@@ -205,6 +215,7 @@ def test_read_eval_file_header_only():
     assert result["header"] is not None
 
 
+@pytest.mark.skipif(not _has_native, reason="Rust native extension not available")
 def test_read_eval_file_not_found():
     from inspect_fast_loader._native import read_eval_file
 

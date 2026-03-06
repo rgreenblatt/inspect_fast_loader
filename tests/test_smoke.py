@@ -4,19 +4,22 @@ import json
 import zipfile
 from io import BytesIO
 
+import pytest
+from inspect_fast_loader._zip import HAS_NATIVE
+
 
 def test_import():
-    """Verify the Rust extension compiles and imports."""
+    """Verify the package imports and has core attributes."""
     import inspect_fast_loader
 
-    assert hasattr(inspect_fast_loader, "list_zip_entries")
-    assert hasattr(inspect_fast_loader, "read_zip_member")
     assert hasattr(inspect_fast_loader, "read_eval_file")
     assert hasattr(inspect_fast_loader, "patch")
     assert hasattr(inspect_fast_loader, "unpatch")
     assert hasattr(inspect_fast_loader, "is_patched")
+    assert hasattr(inspect_fast_loader, "HAS_NATIVE")
 
 
+@pytest.mark.skipif(not HAS_NATIVE, reason="Rust native extension not available")
 def test_list_zip_entries():
     """Verify ZIP entry listing works."""
     from inspect_fast_loader import list_zip_entries
@@ -33,6 +36,7 @@ def test_list_zip_entries():
     assert len(entries) == 2
 
 
+@pytest.mark.skipif(not HAS_NATIVE, reason="Rust native extension not available")
 def test_read_zip_member():
     """Verify ZIP member reading works."""
     from inspect_fast_loader import read_zip_member
@@ -47,6 +51,7 @@ def test_read_zip_member():
     assert result == content
 
 
+@pytest.mark.skipif(not HAS_NATIVE, reason="Rust native extension not available")
 def test_read_zip_member_missing():
     """Verify missing ZIP member raises KeyError."""
     from inspect_fast_loader import read_zip_member

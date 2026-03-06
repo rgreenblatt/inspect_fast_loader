@@ -26,7 +26,13 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def _py_read_eval_file(path: str, header_only: bool = False) -> dict:
-    with zipfile.ZipFile(path) as zf:
+    try:
+        zf = zipfile.ZipFile(path)
+    except FileNotFoundError:
+        raise
+    except Exception as e:
+        raise ValueError(f"Invalid ZIP file: {e}") from e
+    with zf:
         names = zf.namelist()
         has_header_json = "header.json" in names
 
@@ -55,12 +61,24 @@ def _py_read_eval_headers_batch(paths: list[str]) -> list[dict]:
 
 
 def _py_read_eval_sample(path: str, entry_name: str) -> dict:
-    with zipfile.ZipFile(path) as zf:
+    try:
+        zf = zipfile.ZipFile(path)
+    except FileNotFoundError:
+        raise
+    except Exception as e:
+        raise ValueError(f"Invalid ZIP file: {e}") from e
+    with zf:
         return json.loads(zf.read(entry_name))
 
 
 def _py_read_eval_summaries(path: str) -> list[dict]:
-    with zipfile.ZipFile(path) as zf:
+    try:
+        zf = zipfile.ZipFile(path)
+    except FileNotFoundError:
+        raise
+    except Exception as e:
+        raise ValueError(f"Invalid ZIP file: {e}") from e
+    with zf:
         names = zf.namelist()
 
         if "summaries.json" in names:
