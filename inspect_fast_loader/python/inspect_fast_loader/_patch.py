@@ -108,7 +108,7 @@ def _fallback_to_original_sync(
     our patched async version before falling back again. Instead, we call the original
     async function directly to avoid the extra hop.
     """
-    from inspect_ai._util.concurrency import run_coroutine
+    from inspect_ai._util._async import run_coroutine
     return run_coroutine(
         _originals["read_eval_log_async"](log_file, header_only, resolve_attachments, format)
     )
@@ -201,7 +201,7 @@ def _fast_read_eval_log_headers_impl(
     progress: Any = None,
 ) -> list[EvalLog]:
     """Fast implementation of read_eval_log_headers using Rust."""
-    from inspect_ai._util.concurrency import run_coroutine
+    from inspect_ai._util._async import run_coroutine
     return run_coroutine(_fast_read_eval_log_headers_async_impl(log_files, progress))
 
 

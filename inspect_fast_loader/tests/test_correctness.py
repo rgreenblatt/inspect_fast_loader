@@ -403,3 +403,70 @@ def test_async_read_eval():
     unpatch()
 
     assert_logs_equal(sync_log, async_log)
+
+
+# ---- Tests that exercise the patched function via module attribute ----
+# These ensure the sync fallback path works when the function is called
+# via the module (as real callers would), not via a pre-patching import.
+
+def test_patched_sync_json_via_module():
+    """Sync .json read via module attribute should work after patching."""
+    import inspect_ai.log._file as fm
+    path = str(TEST_LOGS_DIR / "test_10samples.json")
+
+    patch()
+    try:
+        log = fm.read_eval_log(path)
+        assert log.status == "success"
+        assert log.samples is not None
+        assert len(log.samples) == 10
+    finally:
+        unpatch()
+
+
+def test_patched_sync_eval_header_only_via_module():
+    """Sync header-only .eval read via module attribute should work."""
+    import inspect_ai.log._file as fm
+    path = str(TEST_LOGS_DIR / "test_10samples.eval")
+
+    patch()
+    try:
+        log = fm.read_eval_log(path, header_only=True)
+        assert log.status == "success"
+        assert log.samples is None
+    finally:
+        unpatch()
+
+
+def test_patched_sync_eval_full_via_module():
+    """Sync full .eval read via module attribute should work."""
+    import inspect_ai.log._file as fm
+    path = str(TEST_LOGS_DIR / "test_10samples.eval")
+
+    patch()
+    try:
+        log = fm.read_eval_log(path)
+        assert log.status == "success"
+        assert log.samples is not None
+        assert len(log.samples) == 10
+    finally:
+        unpatch()
+
+
+def test_patched_batch_headers_via_module():
+    """Batch header reading via module attribute should work."""
+    import inspect_ai.log._file as fm
+    batch_files = sorted(TEST_LOGS_DIR.glob("batch_*.eval"))[:5]
+    if not batch_files:
+        pytest.skip("No batch test files found")
+
+    paths = [str(f) for f in batch_files]
+
+    patch()
+    try:
+        headers = fm.read_eval_log_headers(paths)
+        assert len(headers) == len(paths)
+        for h in headers:
+            assert h.samples is None
+    finally:
+        unpatch()
