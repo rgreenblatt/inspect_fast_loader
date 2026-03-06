@@ -34,3 +34,5 @@
 {"operation": "single_sample_excluded", "time_ms": 0.40226615965366364, "config": "fast"}
 {"operation": "sample_summaries", "time_ms": 0.43304404243826866, "config": "fast"}
 {"operation": "streaming_samples", "time_ms": 4.553074948489666, "config": "fast"}
+{"operation": "full_read_eval", "size": "5000_samples", "time_ms": 10087.00031787157, "config": "original"}
+{"operation": "full_read_eval", "size": "5000_samples", "time_ms": 3052.3313768208027, "config": "fast"}

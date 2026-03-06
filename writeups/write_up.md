@@ -29,6 +29,7 @@ See `write_up_optimization_features_polish.md` for detailed findings and plots.
 ### Final Performance (All Operations)
 | Operation | Original | Fast | Speedup |
 |---|---|---|---|
+| .eval full read (5000 samples) | 10087ms | 3052ms | **3.30x** |
 | .eval full read (1000 samples) | 2053ms | 259ms | **7.94x** |
 | .eval full read (100 samples) | 152ms | 21ms | **7.32x** |
 | .json full read (1000 samples) | 1461ms | 264ms | **5.54x** |

@@ -44,6 +44,7 @@ def plot_speedup_overview(results):
 
     # Format labels
     label_map = {
+        "full_read_eval_5000_samples": ".eval full (5000)",
         "full_read_eval_1000_samples": ".eval full (1000)",
         "full_read_eval_100_samples": ".eval full (100)",
         "full_read_eval_10_samples": ".eval full (10)",
@@ -66,6 +67,7 @@ def plot_speedup_overview(results):
 
     # Order for display
     display_order = [
+        "full_read_eval_5000_samples",
         "full_read_eval_1000_samples", "full_read_eval_100_samples",
         "full_read_eval_10_samples", "full_read_eval_5_samples",
         "full_read_json_1000_samples", "full_read_json_100_samples",
@@ -137,6 +139,7 @@ def plot_absolute_times(results):
 
     # Focus on the most important operations
     key_ops = [
+        ("full_read_eval_5000_samples", ".eval full\n(5000 samples)"),
         ("full_read_eval_1000_samples", ".eval full\n(1000 samples)"),
         ("full_read_eval_100_samples", ".eval full\n(100 samples)"),
         ("full_read_json_1000_samples", ".json full\n(1000 samples)"),
