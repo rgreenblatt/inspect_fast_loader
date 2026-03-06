@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, IO, Literal
 
 import inspect_ai.log._file as _file_module
-from inspect_ai._util.constants import LOG_SCHEMA_VERSION, get_deserializing_context
+from inspect_ai._util.constants import get_deserializing_context
 from inspect_ai.log._file import EvalLogInfo
 from inspect_ai.log._log import (
     EvalLog,
@@ -24,7 +24,7 @@ from inspect_ai.log._log import (
     sort_samples,
 )
 
-from inspect_fast_loader._native import read_eval_file, read_json_file
+from inspect_fast_loader._native import read_eval_file
 
 logger = logging.getLogger(__name__)
 
@@ -54,11 +54,6 @@ def _detect_format(path: str, format: str) -> str:
     elif path.endswith(".json"):
         return "json"
     raise ValueError(f"Cannot detect format for: {path}")
-
-
-def _validate_version(ver: int) -> None:
-    if ver > LOG_SCHEMA_VERSION:
-        raise ValueError(f"Unable to read version {ver} of log format.")
 
 
 def _build_eval_log_from_eval_file(raw: dict, path: str, header_only: bool) -> EvalLog:
@@ -98,23 +93,6 @@ def _build_eval_log_from_eval_file(raw: dict, path: str, header_only: bool) -> E
     return log
 
 
-def _build_eval_log_from_json_file(raw_data: dict, path: str, header_only: bool) -> EvalLog:
-    """Build an EvalLog from the dict returned by read_json_file (Rust .json reader)."""
-    ctx = get_deserializing_context()
-    log = EvalLog.model_validate(raw_data, context=ctx)
-
-    _validate_version(log.version)
-    log.version = LOG_SCHEMA_VERSION
-
-    if header_only:
-        log.samples = None
-        if log.results is not None:
-            log.results.sample_reductions = None
-            log.reductions = None
-
-    log.location = path
-    return log
-
 
 def _is_bytes_input(log_file: Any) -> bool:
     """Check if log_file is a bytes stream (IO[bytes]) rather than a path."""
@@ -142,13 +120,11 @@ def _fast_read_eval_log_impl(
         raw = read_eval_file(path, header_only)
         log = _build_eval_log_from_eval_file(raw, path, header_only)
     elif fmt == "json":
-        if header_only:
-            # For header-only .json reads, the original uses ijson streaming
-            # which avoids reading/parsing the large samples array entirely.
-            # Our Rust impl would read the whole file, so fall back to original.
-            return _originals["read_eval_log"](log_file, header_only, resolve_attachments, format)
-        raw = read_json_file(path)
-        log = _build_eval_log_from_json_file(raw, path, header_only)
+        # For .json format, fall back to the original Python implementation.
+        # pydantic_core.from_json() is already Rust-backed and optimized
+        # for producing Python objects from JSON. Our serde_json→Python dict
+        # conversion adds overhead rather than saving time.
+        return _originals["read_eval_log"](log_file, header_only, resolve_attachments, format)
     else:
         raise ValueError(f"Unknown format: {fmt}")
 
@@ -189,8 +165,8 @@ async def _fast_read_eval_log_async_impl(
     path = _resolve_path(log_file)
     fmt = _detect_format(path, format)
 
-    # For header-only .json, fall back to original (uses ijson streaming)
-    if fmt == "json" and header_only:
+    # For .json format, fall back to original (pydantic_core.from_json is already Rust-backed)
+    if fmt == "json":
         return await _originals["read_eval_log_async"](log_file, header_only, resolve_attachments, format)
 
     # Run synchronous Rust I/O in a thread
