@@ -10,6 +10,26 @@ The key techniques:
 2. Apply the same migrations that model_validate would apply (migrate_deprecated, etc.)
 3. Construct all nested Pydantic model instances so model_dump() produces correct output
 4. Convert timestamp strings to datetime objects for events (required by serializer)
+
+FRAGILITY WARNING:
+    This module hard-codes knowledge of inspect_ai's Pydantic model types, their
+    fields, defaults, validators, and migrations. It WILL break if inspect_ai
+    adds/removes/renames fields, adds new model_validators, changes migration
+    logic, or adds new event/content/message types.
+
+    The correctness test suite (test_bypass_correctness.py) is the primary safety
+    net — it compares model_dump() output of bypassed construction vs standard
+    model_validate() for all test logs. Run these tests after any inspect_ai
+    version upgrade.
+
+    Tested against inspect_ai version: 0.3.188.
+
+    To update after an inspect_ai upgrade:
+    1. Run the test suite — failing tests reveal what changed.
+    2. Check new model_validators on EvalSample, ModelOutput, ChatCompletionChoice.
+    3. Check for new Event types (add to _EVENT_CLS dict).
+    4. Check for new Content types (add to _CONTENT_CLS dict).
+    5. Check for new/changed field defaults on EvalSample and nested models.
 """
 
 from __future__ import annotations

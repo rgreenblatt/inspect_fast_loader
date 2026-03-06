@@ -246,8 +246,9 @@ class TestNaNInfHandling:
         fast_d = sample.model_dump()
         orig_d = full_log.samples[0].model_dump()
         # Recursive comparison with NaN tolerance
-        from test_new_patches import _deep_compare
-        assert _deep_compare(fast_d, orig_d), "Single-sample read doesn't match full read for NaN/Inf file"
+        from helpers import deep_compare
+        diffs = deep_compare(fast_d, orig_d)
+        assert not diffs, f"Single-sample read doesn't match full read for NaN/Inf file: {diffs[:10]}"
 
     def test_nan_in_batch_headers(self):
         """NaN values in headers should be handled."""

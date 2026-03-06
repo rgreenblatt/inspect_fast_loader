@@ -8,7 +8,6 @@ construction helpers (_construct_message, _construct_model_output, etc.).
 """
 
 import copy
-import math
 import os
 from pathlib import Path
 
@@ -16,7 +15,7 @@ import pytest
 
 from inspect_ai._util.constants import get_deserializing_context
 from inspect_ai.log._file import read_eval_log
-from inspect_ai.log._log import EvalLog, EvalSample
+from inspect_ai.log._log import EvalSample
 from inspect_ai.model._chat_message import (
     ChatMessageAssistant,
     ChatMessageSystem,
@@ -28,7 +27,6 @@ from inspect_ai.scorer._metric import Score
 from inspect_fast_loader import patch, unpatch
 from inspect_fast_loader._construct import (
     construct_sample_fast,
-    _fast_construct,
     _construct_message,
     _construct_model_output,
     _construct_score,
@@ -36,6 +34,8 @@ from inspect_fast_loader._construct import (
     _construct_event,
 )
 from inspect_fast_loader._native import read_eval_file
+
+from helpers import deep_compare
 
 TEST_LOGS_DIR = Path(__file__).parent.parent.parent / "test_logs"
 
@@ -45,67 +45,6 @@ def _ensure_unpatched():
     unpatch()
     yield
     unpatch()
-
-
-def _approx_equal(a, b, rel_tol=1e-9, abs_tol=1e-12):
-    if isinstance(a, float) and isinstance(b, float):
-        if math.isnan(a) and math.isnan(b):
-            return True
-        if math.isinf(a) and math.isinf(b):
-            return (a > 0 and b > 0) or (a < 0 and b < 0)
-        return math.isclose(a, b, rel_tol=rel_tol, abs_tol=abs_tol)
-    return False
-
-
-def _deep_compare(orig, fast, path_str="root"):
-    """Recursively compare two values, collecting differences."""
-    diffs = []
-    if orig is None and fast is None:
-        return diffs
-    if orig is None or fast is None:
-        diffs.append(f"{path_str}: one is None (orig={orig is None}, fast={fast is None})")
-        return diffs
-    if isinstance(orig, float) and isinstance(fast, float):
-        if not _approx_equal(orig, fast):
-            diffs.append(f"{path_str}: float mismatch orig={orig} fast={fast}")
-        return diffs
-    if type(orig) != type(fast):
-        if isinstance(orig, (int, float)) and isinstance(fast, (int, float)):
-            if not _approx_equal(float(orig), float(fast)):
-                diffs.append(f"{path_str}: numeric mismatch {orig} vs {fast}")
-        else:
-            diffs.append(f"{path_str}: type mismatch {type(orig).__name__} vs {type(fast).__name__}")
-        return diffs
-    if isinstance(orig, dict):
-        all_keys = set(orig.keys()) | set(fast.keys())
-        for k in sorted(all_keys):
-            if k not in orig:
-                diffs.append(f"{path_str}.{k}: missing in original")
-            elif k not in fast:
-                diffs.append(f"{path_str}.{k}: missing in fast")
-            else:
-                diffs.extend(_deep_compare(orig[k], fast[k], f"{path_str}.{k}"))
-        return diffs
-    if isinstance(orig, (list, tuple)):
-        if len(orig) != len(fast):
-            diffs.append(f"{path_str}: length mismatch {len(orig)} vs {len(fast)}")
-            return diffs
-        for i in range(len(orig)):
-            diffs.extend(_deep_compare(orig[i], fast[i], f"{path_str}[{i}]"))
-        return diffs
-    if isinstance(orig, str):
-        if orig != fast:
-            diffs.append(f"{path_str}: string mismatch")
-        return diffs
-    if isinstance(orig, (int, bool)):
-        if orig != fast:
-            diffs.append(f"{path_str}: value mismatch {orig} vs {fast}")
-        return diffs
-    if hasattr(orig, "model_dump"):
-        return _deep_compare(orig.model_dump(), fast.model_dump(), path_str)
-    if orig != fast:
-        diffs.append(f"{path_str}: value mismatch")
-    return diffs
 
 
 # ---- Per-sample model_dump comparison across all test files ----
@@ -140,7 +79,7 @@ def test_bypass_model_dump_matches_eval(name):
 
         v_dump = validated.model_dump()
         c_dump = constructed.model_dump()
-        diffs = _deep_compare(v_dump, c_dump, f"sample[{i}]")
+        diffs = deep_compare(v_dump, c_dump, f"sample[{i}]")
         total_diffs.extend(diffs)
 
     if total_diffs:
@@ -176,7 +115,7 @@ def test_bypass_full_pipeline_eval(name):
     orig_dict.pop("location", None)
     fast_dict.pop("location", None)
 
-    diffs = _deep_compare(orig_dict, fast_dict)
+    diffs = deep_compare(orig_dict, fast_dict)
     if diffs:
         msg = f"Found {len(diffs)} differences:\n" + "\n".join(f"  - {d}" for d in diffs[:20])
         pytest.fail(msg)
@@ -209,7 +148,7 @@ def test_bypass_full_pipeline_json(name):
     orig_dict.pop("location", None)
     fast_dict.pop("location", None)
 
-    diffs = _deep_compare(orig_dict, fast_dict)
+    diffs = deep_compare(orig_dict, fast_dict)
     if diffs:
         msg = f"Found {len(diffs)} differences:\n" + "\n".join(f"  - {d}" for d in diffs[:20])
         pytest.fail(msg)
@@ -285,7 +224,7 @@ def test_bypass_nan_inf_preserved():
     fast_dict = fast.model_dump()
     orig_dict.pop("location", None)
     fast_dict.pop("location", None)
-    diffs = _deep_compare(orig_dict, fast_dict)
+    diffs = deep_compare(orig_dict, fast_dict)
     assert not diffs, f"NaN/Inf log differences: {diffs[:10]}"
 
 
@@ -409,7 +348,7 @@ def test_bypass_deprecated_score_field():
     # Values should match
     v_dump = validated.model_dump()
     c_dump = constructed.model_dump()
-    diffs = _deep_compare(v_dump, c_dump)
+    diffs = deep_compare(v_dump, c_dump)
     assert not diffs, f"Deprecated score migration differences: {diffs[:10]}"
 
 
@@ -467,7 +406,7 @@ def test_bypass_sandbox_list_migration():
 
     v_dump = validated.model_dump()
     c_dump = constructed.model_dump()
-    diffs = _deep_compare(v_dump, c_dump)
+    diffs = deep_compare(v_dump, c_dump)
     assert not diffs, f"Sandbox list migration differences: {diffs[:10]}"
 
 
@@ -483,7 +422,7 @@ def test_construct_sample_fast_basic():
     for sd in raw["samples"]:
         orig = EvalSample.model_validate(copy.deepcopy(sd), context=ctx)
         fast = construct_sample_fast(copy.deepcopy(sd))
-        diffs = _deep_compare(orig.model_dump(), fast.model_dump())
+        diffs = deep_compare(orig.model_dump(), fast.model_dump())
         assert not diffs, f"Differences: {diffs[:10]}"
 
 
@@ -576,7 +515,7 @@ def test_construct_event_from_real_data():
         for event_data in sample_data.get("events", []):
             orig = event_adapter.validate_python(copy.deepcopy(event_data), context=ctx)
             fast = _construct_event(copy.deepcopy(event_data))
-            diffs = _deep_compare(orig.model_dump(), fast.model_dump())
+            diffs = deep_compare(orig.model_dump(), fast.model_dump())
             assert not diffs, f"Event '{event_data.get('event')}' differences: {diffs[:5]}"
 
 

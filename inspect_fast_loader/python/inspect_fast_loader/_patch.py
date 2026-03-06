@@ -543,71 +543,47 @@ def _fast_read_eval_log_samples_impl(
                     raise
 
 
+def _apply_patch(name: str, fast_impl: Any) -> None:
+    """Save the original function, wrap the fast implementation, and install it."""
+    _originals[name] = getattr(_file_module, name)
+    wrapper = functools.wraps(_originals[name])(fast_impl)
+    wrapper._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
+    wrapper._original = _originals[name]  # type: ignore[attr-defined]
+    setattr(_file_module, name, wrapper)
+
+
+# Maps each inspect function name to its fast replacement.
+_PATCHES: list[tuple[str, Any]] = [
+    ("read_eval_log", _fast_read_eval_log_impl),
+    ("read_eval_log_async", _fast_read_eval_log_async_impl),
+    ("read_eval_log_headers", _fast_read_eval_log_headers_impl),
+    ("read_eval_log_headers_async", _fast_read_eval_log_headers_async_impl),
+    ("read_eval_log_sample", _fast_read_eval_log_sample_impl),
+    ("read_eval_log_sample_async", _fast_read_eval_log_sample_async_impl),
+    ("read_eval_log_sample_summaries", _fast_read_eval_log_sample_summaries_impl),
+    ("read_eval_log_sample_summaries_async", _fast_read_eval_log_sample_summaries_async_impl),
+    ("read_eval_log_samples", _fast_read_eval_log_samples_impl),
+]
+
+
 def patch() -> None:
-    """Replace inspect's log reading functions with Rust-accelerated implementations."""
+    """Replace inspect's log reading functions with Rust-accelerated implementations.
+
+    Usage::
+
+        import inspect_fast_loader
+        inspect_fast_loader.patch()
+
+    After patching, all calls to ``inspect_ai.log._file.read_eval_log`` (and the
+    other 8 patched functions) are transparently routed through the fast Rust
+    implementation. Call ``unpatch()`` to restore the originals.
+    """
     global _patched
     if _patched:
         return
 
-    # Save originals
-    _all_patched_names = [
-        "read_eval_log", "read_eval_log_async",
-        "read_eval_log_headers", "read_eval_log_headers_async",
-        "read_eval_log_sample", "read_eval_log_sample_async",
-        "read_eval_log_sample_summaries", "read_eval_log_sample_summaries_async",
-        "read_eval_log_samples",
-    ]
-    for name in _all_patched_names:
-        _originals[name] = getattr(_file_module, name)
-
-    # Create wrappers with proper attributes
-    sync_read = functools.wraps(_originals["read_eval_log"])(_fast_read_eval_log_impl)
-    sync_read._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
-    sync_read._original = _originals["read_eval_log"]  # type: ignore[attr-defined]
-    setattr(_file_module, "read_eval_log", sync_read)
-
-    async_read = functools.wraps(_originals["read_eval_log_async"])(_fast_read_eval_log_async_impl)
-    async_read._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
-    async_read._original = _originals["read_eval_log_async"]  # type: ignore[attr-defined]
-    setattr(_file_module, "read_eval_log_async", async_read)
-
-    sync_headers = functools.wraps(_originals["read_eval_log_headers"])(_fast_read_eval_log_headers_impl)
-    sync_headers._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
-    sync_headers._original = _originals["read_eval_log_headers"]  # type: ignore[attr-defined]
-    setattr(_file_module, "read_eval_log_headers", sync_headers)
-
-    async_headers = functools.wraps(_originals["read_eval_log_headers_async"])(_fast_read_eval_log_headers_async_impl)
-    async_headers._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
-    async_headers._original = _originals["read_eval_log_headers_async"]  # type: ignore[attr-defined]
-    setattr(_file_module, "read_eval_log_headers_async", async_headers)
-
-    # read_eval_log_sample
-    sync_sample = functools.wraps(_originals["read_eval_log_sample"])(_fast_read_eval_log_sample_impl)
-    sync_sample._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
-    sync_sample._original = _originals["read_eval_log_sample"]  # type: ignore[attr-defined]
-    setattr(_file_module, "read_eval_log_sample", sync_sample)
-
-    async_sample = functools.wraps(_originals["read_eval_log_sample_async"])(_fast_read_eval_log_sample_async_impl)
-    async_sample._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
-    async_sample._original = _originals["read_eval_log_sample_async"]  # type: ignore[attr-defined]
-    setattr(_file_module, "read_eval_log_sample_async", async_sample)
-
-    # read_eval_log_sample_summaries
-    sync_summaries = functools.wraps(_originals["read_eval_log_sample_summaries"])(_fast_read_eval_log_sample_summaries_impl)
-    sync_summaries._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
-    sync_summaries._original = _originals["read_eval_log_sample_summaries"]  # type: ignore[attr-defined]
-    setattr(_file_module, "read_eval_log_sample_summaries", sync_summaries)
-
-    async_summaries = functools.wraps(_originals["read_eval_log_sample_summaries_async"])(_fast_read_eval_log_sample_summaries_async_impl)
-    async_summaries._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
-    async_summaries._original = _originals["read_eval_log_sample_summaries_async"]  # type: ignore[attr-defined]
-    setattr(_file_module, "read_eval_log_sample_summaries_async", async_summaries)
-
-    # read_eval_log_samples (generator, sync only)
-    sync_samples = functools.wraps(_originals["read_eval_log_samples"])(_fast_read_eval_log_samples_impl)
-    sync_samples._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
-    sync_samples._original = _originals["read_eval_log_samples"]  # type: ignore[attr-defined]
-    setattr(_file_module, "read_eval_log_samples", sync_samples)
+    for name, fast_impl in _PATCHES:
+        _apply_patch(name, fast_impl)
 
     _patched = True
 

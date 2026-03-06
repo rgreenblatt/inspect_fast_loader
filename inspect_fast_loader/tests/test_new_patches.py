@@ -6,49 +6,21 @@
 """
 
 import asyncio
-import math
 import os
-import sys
 from glob import glob
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-
 import inspect_fast_loader
 from inspect_fast_loader._native import read_eval_headers_batch, read_eval_sample, read_eval_summaries
+
+from helpers import deep_compare
 
 TEST_LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "test_logs")
 
 
 def get_test_files(pattern="*.eval"):
     return sorted(glob(os.path.join(TEST_LOG_DIR, pattern)))
-
-
-def _deep_compare(a, b, path="", tolerance=1e-9):
-    """Recursively compare two values, handling NaN and float tolerance."""
-    if isinstance(a, float) and isinstance(b, float):
-        if math.isnan(a) and math.isnan(b):
-            return True
-        if math.isinf(a) and math.isinf(b):
-            return a > 0 and b > 0 or a < 0 and b < 0
-        if abs(a - b) > tolerance:
-            return False
-        return True
-    if type(a) != type(b):
-        # Allow int/float comparison
-        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-            return abs(float(a) - float(b)) < tolerance
-        return False
-    if isinstance(a, dict):
-        if set(a.keys()) != set(b.keys()):
-            return False
-        return all(_deep_compare(a[k], b[k], f"{path}.{k}") for k in a)
-    if isinstance(a, (list, tuple)):
-        if len(a) != len(b):
-            return False
-        return all(_deep_compare(a[i], b[i], f"{path}[{i}]") for i in range(len(a)))
-    return a == b
 
 
 # ---- Rust native function tests ----
@@ -77,7 +49,7 @@ class TestRustBatchHeaders:
         for path, batch_r in zip(files, batch_results):
             single_r = read_eval_file(path, header_only=True)
             assert batch_r["has_header_json"] == single_r["has_header_json"]
-            assert _deep_compare(batch_r["header"], single_r["header"])
+            assert not deep_compare(batch_r["header"], single_r["header"])
 
 
 class TestRustReadEvalSample:
@@ -135,7 +107,8 @@ class TestPatchedReadEvalLogSample:
         """Compare two EvalSample objects via model_dump."""
         fast_d = fast_sample.model_dump()
         orig_d = orig_sample.model_dump()
-        assert _deep_compare(fast_d, orig_d), f"Sample mismatch"
+        diffs = deep_compare(fast_d, orig_d)
+        assert not diffs, f"Sample mismatch: {diffs[:10]}"
 
     def test_basic_read_by_id(self):
         from inspect_ai.log._file import read_eval_log_sample
@@ -282,9 +255,8 @@ class TestPatchedReadEvalLogSampleSummaries:
             inspect_fast_loader.patch()
             assert len(fast_summaries) == len(orig_summaries), f"Count mismatch for {f}"
             for fast_s, orig_s in zip(fast_summaries, orig_summaries):
-                assert _deep_compare(
-                    fast_s.model_dump(), orig_s.model_dump()
-                ), f"Summary mismatch for {f}"
+                diffs = deep_compare(fast_s.model_dump(), orig_s.model_dump())
+                assert not diffs, f"Summary mismatch for {f}: {diffs[:10]}"
 
     def test_json_format_fallback(self):
         """For .json format, should fall back to original."""
