@@ -1,0 +1,30 @@
+{"operation": "full_read eval 10 samples", "config": "original", "median": 19.3, "min": 16.5, "max": 20.7, "times": [16.5, 16.7, 19.3, 19.8, 20.7]}
+{"operation": "full_read eval 10 samples", "config": "fast", "median": 3.3, "min": 2.8, "max": 3.4, "times": [2.8, 2.9, 3.3, 3.4, 3.4]}
+{"operation": "full_read eval 100 samples", "config": "original", "median": 168.3, "min": 153.4, "max": 176.7, "times": [153.4, 163.6, 168.3, 173.4, 176.7]}
+{"operation": "full_read eval 100 samples", "config": "fast", "median": 23.2, "min": 21.1, "max": 48.5, "times": [21.1, 22.7, 23.2, 26.5, 48.5]}
+{"operation": "full_read eval 1000 samples", "config": "original", "median": 2047.7, "min": 1967.7, "max": 2069.6, "times": [1967.7, 2017.5, 2047.7, 2068.8, 2069.6]}
+{"operation": "full_read eval 1000 samples", "config": "fast", "median": 408.7, "min": 354.4, "max": 441.8, "times": [354.4, 389.5, 408.7, 429.4, 441.8]}
+{"operation": "full_read eval 5000 samples", "config": "original", "median": 10669.2, "min": 10621.4, "max": 11017.9, "times": [10621.4, 10652.0, 10669.2, 10961.9, 11017.9]}
+{"operation": "full_read eval 5000 samples", "config": "fast", "median": 2263.4, "min": 2236.5, "max": 2288.3, "times": [2236.5, 2253.7, 2263.4, 2276.0, 2288.3]}
+{"operation": "full_read json 10 samples", "config": "original", "median": 7.7, "min": 7.6, "max": 8.2, "times": [7.6, 7.7, 7.7, 8.0, 8.2]}
+{"operation": "full_read json 10 samples", "config": "fast", "median": 1.7, "min": 1.6, "max": 1.7, "times": [1.6, 1.7, 1.7, 1.7, 1.7]}
+{"operation": "full_read json 100 samples", "config": "original", "median": 78.7, "min": 77.6, "max": 82.0, "times": [77.6, 78.5, 78.7, 81.8, 82.0]}
+{"operation": "full_read json 100 samples", "config": "fast", "median": 16.8, "min": 16.7, "max": 17.5, "times": [16.7, 16.8, 16.8, 17.5, 17.5]}
+{"operation": "full_read json 1000 samples", "config": "original", "median": 1091.8, "min": 1059.1, "max": 1179.8, "times": [1059.1, 1079.2, 1091.8, 1101.0, 1179.8]}
+{"operation": "full_read json 1000 samples", "config": "fast", "median": 375.4, "min": 359.5, "max": 386.9, "times": [359.5, 361.6, 375.4, 383.3, 386.9]}
+{"operation": "batch_headers 10 files", "config": "original", "n_files": 10, "median": 21.5, "min": 20.6, "max": 23.6, "times": [20.6, 21.2, 21.5, 23.4, 23.6]}
+{"operation": "batch_headers 10 files", "config": "fast", "n_files": 10, "median": 3.9, "min": 3.2, "max": 4.9, "times": [3.2, 3.4, 3.9, 4.5, 4.9]}
+{"operation": "batch_headers 25 files", "config": "original", "n_files": 25, "median": 48.2, "min": 46.0, "max": 51.5, "times": [46.0, 46.7, 48.2, 50.3, 51.5]}
+{"operation": "batch_headers 25 files", "config": "fast", "n_files": 25, "median": 5.6, "min": 5.0, "max": 6.5, "times": [5.0, 5.4, 5.6, 6.1, 6.5]}
+{"operation": "batch_headers 50 files", "config": "original", "n_files": 50, "median": 92.1, "min": 84.6, "max": 96.2, "times": [84.6, 88.4, 92.1, 93.0, 96.2]}
+{"operation": "batch_headers 50 files", "config": "fast", "n_files": 50, "median": 8.6, "min": 7.4, "max": 9.9, "times": [7.4, 7.9, 8.6, 9.1, 9.9]}
+{"operation": "batch_headers 61 files", "config": "original", "n_files": 61, "median": 130.1, "min": 125.9, "max": 142.1, "times": [125.9, 129.2, 130.1, 131.3, 142.1]}
+{"operation": "batch_headers 61 files", "config": "fast", "n_files": 61, "median": 46.4, "min": 42.2, "max": 67.1, "times": [42.2, 45.7, 46.4, 59.0, 67.1]}
+{"operation": "single_sample", "config": "original", "median": 3.9, "min": 3.6, "max": 4.2, "times": [3.6, 3.7, 3.9, 4.0, 4.2]}
+{"operation": "single_sample", "config": "fast", "median": 0.4, "min": 0.4, "max": 0.4, "times": [0.4, 0.4, 0.4, 0.4, 0.4]}
+{"operation": "single_sample_excluded", "config": "original", "median": 5.0, "min": 3.9, "max": 6.1, "times": [3.9, 5.0, 5.0, 5.8, 6.1]}
+{"operation": "single_sample_excluded", "config": "fast", "median": 0.4, "min": 0.4, "max": 0.5, "times": [0.4, 0.4, 0.4, 0.5, 0.5]}
+{"operation": "sample_summaries", "config": "original", "median": 3.5, "min": 2.7, "max": 4.4, "times": [2.7, 2.8, 3.5, 3.5, 4.4]}
+{"operation": "sample_summaries", "config": "fast", "median": 0.5, "min": 0.4, "max": 0.5, "times": [0.4, 0.5, 0.5, 0.5, 0.5]}
+{"operation": "streaming_samples", "config": "original", "median": 20.7, "min": 17.2, "max": 25.3, "times": [17.2, 18.2, 20.7, 21.0, 25.3]}
+{"operation": "streaming_samples", "config": "fast", "median": 8.7, "min": 3.8, "max": 10.0, "times": [3.8, 4.9, 8.7, 8.7, 10.0]}

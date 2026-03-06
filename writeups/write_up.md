@@ -52,10 +52,20 @@ All measurements below are from isolated subprocess runs to avoid in-process cac
 - `read_eval_log_sample_summaries`: Rust summaries reader (6.8x)
 - `read_eval_log_samples`: Generator using per-sample fast reads (4.3x)
 - Total patched functions: 9 (up from 4)
-- 176 tests total (all passing)
 
 ### Known limitation: batch headers with large files
 Batch header speedup drops when the file set includes very large logs (5000+ samples). A single 5000-sample file's header.json takes ~31ms to read (contains all sample_ids), dominating the batch. For typical file sets with normal-sized logs, batch headers consistently achieve 6-10x.
+
+## Phase: code_cleanup_and_review (Complete)
+See `write_up_code_cleanup_and_review.md` for detailed findings.
+
+### Key changes
+- **Dead code removal**: Removed 5 superseded benchmark/plot scripts and 4 old results files
+- **Test refactoring**: Extracted shared `deep_compare` into `tests/helpers.py` (was duplicated in 3 test files)
+- **Patch refactoring**: Replaced repetitive `patch()` function with data-driven `_apply_patch()` + `_PATCHES` table
+- **Version safety**: Added inspect_ai version check (warns on mismatch) and fragility documentation to `_construct.py`
+- **Skipped test fixed**: `test_string_sample_ids` now passes (regenerated test logs to include string ID files)
+- **177 tests pass, 0 skipped, 0 failed**
 
 ## Important Choices
 - Test logs generated via direct JSON/ZIP construction (simpler, verified loadable)
