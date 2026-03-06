@@ -628,6 +628,8 @@ read_eval_log_samples(log_file)
 
 Key observation: The streaming approach avoids parsing the `samples` array entirely, which can be hundreds of megabytes.
 
+**Important subtlety**: The streaming header parser uses `EvalSpec(**v)` (kwargs construction) rather than `EvalSpec.model_validate(v, context=get_deserializing_context())`. This means the deserialization context (`DESERIALIZING=True`) is NOT passed during streaming .json header reads. As a result, `EvalSpec.model_post_init` generates `eval_id` using a random UUID instead of a deterministic hash. This is a discrepancy between the streaming and full-parse code paths that the Rust implementation should be aware of.
+
 ---
 
 ## Eval Set Merging/Combining Logic

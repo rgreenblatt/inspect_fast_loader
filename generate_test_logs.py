@@ -576,6 +576,20 @@ def generate_all_test_logs(output_dir: str = "test_logs", seed: int = 42) -> dic
     generated["empty_json"] = json_path
     generated["empty_eval"] = eval_path
 
+    # Log with string sample IDs (inspect supports both int and str IDs)
+    rng = random.Random(seed + 4444)
+    log = generate_log(rng, n_samples=5)
+    for i, sample in enumerate(log["samples"]):
+        sample["id"] = f"sample_{chr(65 + i)}"
+        sample["uuid"] = f"sample-uuid-{sample['id']}-{sample['epoch']}"
+    log["eval"]["dataset"]["sample_ids"] = [s["id"] for s in log["samples"]]
+    json_path = os.path.join(output_dir, "test_string_ids.json")
+    eval_path = os.path.join(output_dir, "test_string_ids.eval")
+    write_json_log(log, json_path)
+    write_eval_log(log, eval_path)
+    generated["string_ids_json"] = json_path
+    generated["string_ids_eval"] = eval_path
+
     # Batch of logs for header reading tests
     for i in range(50):
         rng = random.Random(seed + 50000 + i)

@@ -32,3 +32,17 @@
 - Used PyO3 v0.23 (stable, compatible with our Rust toolchain)
 - test_logs/ and target/ are gitignored since they're generated artifacts
 - All generated logs verified loadable by inspect's Python API
+
+## Merge improvements 03/05/2026 22:26 - commit pending
+
+### What was done
+- Extended monkey-patching to cover all 4 functions (sync + async): `read_eval_log`, `read_eval_log_async`, `read_eval_log_headers`, `read_eval_log_headers_async`
+- Added wrapper attribute marking (`_is_fast_loader_wrapper = True`) on patched functions for easy detection of patching status
+- Added `is_patched()` function to public API
+- Added string sample IDs test case and test log generation (inspect supports both int and str IDs)
+- Documented important subtlety: .json streaming header parser uses `EvalSpec(**v)` (not `model_validate` with context), so deserialization context is NOT passed — `eval_id` generation differs from full-parse path
+- Updated continuation_context.md with learned context from parallel branches
+- Tests: 28 passing (up from 25)
+
+### Key findings
+- The .json streaming header parser (`_read_header_streaming`) bypasses the deserialization context, which means `EvalSpec.model_post_init` generates `eval_id` via random UUID rather than deterministic hash. This is a subtle but important discrepancy for the Rust implementation to be aware of.

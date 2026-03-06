@@ -192,6 +192,20 @@ def test_deterministic_generation():
         assert s1["uuid"] == s2["uuid"]
 
 
+def test_string_sample_ids(test_logs_dir):
+    """Verify logs with string sample IDs load correctly."""
+    from inspect_ai.log import read_eval_log
+
+    for fmt in ["eval", "json"]:
+        log = read_eval_log(os.path.join(test_logs_dir, f"test_string_ids.{fmt}"))
+        assert log.status == "success"
+        assert len(log.samples) == 5
+        # Verify IDs are strings like "sample_A", "sample_B", etc.
+        ids = {s.id for s in log.samples}
+        assert all(isinstance(sid, str) for sid in ids)
+        assert "sample_A" in ids
+
+
 def test_monkey_patch_passthrough(test_logs_dir):
     """Verify monkey-patching works with real log files."""
     from inspect_ai.log import read_eval_log
