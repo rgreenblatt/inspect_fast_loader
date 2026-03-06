@@ -40,6 +40,7 @@ from inspect_fast_loader._zip import (
 )
 
 SCORER_PLACEHOLDER = "88F74D2C"
+_SENTINEL = object()
 
 # Store original functions so we can restore them
 _originals: dict[str, Any] = {}
@@ -294,6 +295,7 @@ def _fast_read_eval_log_sample_impl(
     resolve_attachments: bool | Literal["full", "core"] = False,
     format: Literal["eval", "json", "auto"] = "auto",
     exclude_fields: set[str] | None = None,
+    _scorer_name: str | None | object = _SENTINEL,
 ) -> EvalSample:
     """Fast implementation of read_eval_log_sample for .eval files."""
     if _is_bytes_input(log_file):
@@ -332,7 +334,10 @@ def _fast_read_eval_log_sample_impl(
             sample_data.pop(field, None)
 
     sample = construct_sample_fast(sample_data)
-    _populate_sample_scorer_placeholder(sample, path)
+
+    # Replace scorer placeholder — use pre-computed name if provided, else read header
+    scorer_name = _scorer_name if _scorer_name is not _SENTINEL else _get_scorer_name(path)
+    _replace_scorer_placeholder(sample, scorer_name)
 
     if resolve_attachments:
         from inspect_ai.log._condense import resolve_sample_attachments
@@ -341,16 +346,19 @@ def _fast_read_eval_log_sample_impl(
     return sample
 
 
-def _populate_sample_scorer_placeholder(sample: EvalSample, path: str) -> None:
-    """Replace scorer placeholder in a single sample by reading the header."""
-    if not sample.scores or SCORER_PLACEHOLDER not in sample.scores:
-        return
+def _get_scorer_name(path: str) -> str | None:
+    """Read the scorer name from the log header."""
     raw = read_eval_file(path, header_only=True)
     results = raw["header"].get("results")
     if results and results.get("scores"):
-        scorer_name = results["scores"][0].get("name")
-        if scorer_name:
-            sample.scores[scorer_name] = sample.scores.pop(SCORER_PLACEHOLDER)
+        return results["scores"][0].get("name")
+    return None
+
+
+def _replace_scorer_placeholder(sample: EvalSample, scorer_name: str | None) -> None:
+    """Replace scorer placeholder in a sample's scores with the actual scorer name."""
+    if scorer_name and sample.scores and SCORER_PLACEHOLDER in sample.scores:
+        sample.scores[scorer_name] = sample.scores.pop(SCORER_PLACEHOLDER)
 
 
 async def _fast_read_eval_log_sample_async_impl(
@@ -452,6 +460,11 @@ def _fast_read_eval_log_samples_impl(
             + "Specify all_samples_required=False to read the samples that exist."
         )
 
+    # Pre-compute scorer name to avoid re-reading the header for every sample
+    scorer_name = None
+    if log_header.results and log_header.results.scores:
+        scorer_name = log_header.results.scores[0].name
+
     for sample_id in log_header.eval.dataset.sample_ids:
         for epoch_id in range(1, (log_header.eval.config.epochs or 1) + 1):
             try:
@@ -462,6 +475,7 @@ def _fast_read_eval_log_samples_impl(
                     resolve_attachments=resolve_attachments,
                     format=format,
                     exclude_fields=exclude_fields,
+                    _scorer_name=scorer_name,
                 )
                 yield sample
             except IndexError:

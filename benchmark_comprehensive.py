@@ -44,7 +44,7 @@ def benchmark_full_reads(eval_files_by_size, json_files_by_size, results):
         if not files:
             continue
         f = files[0]
-        t = time_operation(lambda: read_eval_log(f))
+        t = time_operation(lambda f=f: read_eval_log(f))
         results.append({"operation": "full_read_eval", "size": label, "time_ms": t * 1000, "config": "current"})
         print(f"  .eval full read ({label}): {t*1000:.1f}ms")
 
@@ -52,7 +52,7 @@ def benchmark_full_reads(eval_files_by_size, json_files_by_size, results):
         if not files:
             continue
         f = files[0]
-        t = time_operation(lambda: read_eval_log(f))
+        t = time_operation(lambda f=f: read_eval_log(f))
         results.append({"operation": "full_read_json", "size": label, "time_ms": t * 1000, "config": "current"})
         print(f"  .json full read ({label}): {t*1000:.1f}ms")
 
@@ -63,13 +63,13 @@ def benchmark_header_reads(eval_files, json_files, results):
 
     if eval_files:
         f = eval_files[0]
-        t = time_operation(lambda: read_eval_log(f, header_only=True))
+        t = time_operation(lambda f=f: read_eval_log(f, header_only=True))
         results.append({"operation": "header_only_eval", "time_ms": t * 1000, "config": "current"})
         print(f"  .eval header-only: {t*1000:.1f}ms")
 
     if json_files:
         f = json_files[0]
-        t = time_operation(lambda: read_eval_log(f, header_only=True))
+        t = time_operation(lambda f=f: read_eval_log(f, header_only=True))
         results.append({"operation": "header_only_json", "time_ms": t * 1000, "config": "current"})
         print(f"  .json header-only: {t*1000:.1f}ms")
 
@@ -83,7 +83,7 @@ def benchmark_batch_headers(eval_files, results):
         if len(files) < n_files and n_files != len(eval_files):
             continue
         actual_n = len(files)
-        t = time_operation(lambda: read_eval_log_headers(files))
+        t = time_operation(lambda files=files: read_eval_log_headers(files))
         results.append({"operation": "batch_headers", "size": f"{actual_n}_files", "time_ms": t * 1000, "config": "current", "n_files": actual_n})
         print(f"  batch headers ({actual_n} files): {t*1000:.1f}ms")
 
@@ -96,12 +96,12 @@ def benchmark_single_sample(eval_files, results):
         return
 
     f = eval_files[0]
-    t = time_operation(lambda: read_eval_log_sample(f, id=1, epoch=1))
+    t = time_operation(lambda f=f: read_eval_log_sample(f, id=1, epoch=1))
     results.append({"operation": "single_sample", "time_ms": t * 1000, "config": "current"})
     print(f"  single sample read: {t*1000:.1f}ms")
 
     # With exclude_fields
-    t = time_operation(lambda: read_eval_log_sample(f, id=1, epoch=1, exclude_fields={"store", "attachments"}))
+    t = time_operation(lambda f=f: read_eval_log_sample(f, id=1, epoch=1, exclude_fields={"store", "attachments"}))
     results.append({"operation": "single_sample_excluded", "time_ms": t * 1000, "config": "current"})
     print(f"  single sample read (exclude_fields): {t*1000:.1f}ms")
 
@@ -114,7 +114,7 @@ def benchmark_summaries(eval_files, results):
         return
 
     f = eval_files[0]
-    t = time_operation(lambda: read_eval_log_sample_summaries(f))
+    t = time_operation(lambda f=f: read_eval_log_sample_summaries(f))
     results.append({"operation": "sample_summaries", "time_ms": t * 1000, "config": "current"})
     print(f"  sample summaries: {t*1000:.1f}ms")
 
@@ -127,7 +127,7 @@ def benchmark_streaming_samples(eval_files, results):
         return
 
     f = eval_files[0]
-    t = time_operation(lambda: list(read_eval_log_samples(f)))
+    t = time_operation(lambda f=f: list(read_eval_log_samples(f)))
     results.append({"operation": "streaming_samples", "time_ms": t * 1000, "config": "current"})
     print(f"  streaming samples: {t*1000:.1f}ms")
 
@@ -178,7 +178,7 @@ def find_files_by_size(file_list, format_ext):
         try:
             log = read_eval_log(f)
             n = len(log.samples) if log.samples else 0
-        except Exception:
+        except (ValueError, KeyError, FileNotFoundError):
             continue
         if n >= 1000:
             label = "1000_samples"

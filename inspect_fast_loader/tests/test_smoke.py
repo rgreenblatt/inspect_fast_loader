@@ -130,3 +130,71 @@ def test_patch_idempotent():
     patch()  # Should be a no-op
     unpatch()
     unpatch()  # Should be a no-op
+
+
+# ---- Python fallback path tests ----
+# These test the pure-Python implementations in _zip.py directly,
+# which are normally unused when the Rust extension is available.
+
+class TestPythonFallback:
+    def test_py_read_eval_file(self):
+        from inspect_fast_loader._zip import _py_read_eval_file, read_eval_file
+        from helpers import TEST_LOG_DIR
+
+        path = str(TEST_LOG_DIR / "test_10samples.eval")
+        py_result = _py_read_eval_file(path)
+        native_result = read_eval_file(path)
+
+        assert py_result["has_header_json"] == native_result["has_header_json"]
+        assert py_result["header"] == native_result["header"]
+        assert len(py_result["samples"]) == len(native_result["samples"])
+
+    def test_py_read_eval_file_header_only(self):
+        from inspect_fast_loader._zip import _py_read_eval_file, read_eval_file
+        from helpers import TEST_LOG_DIR
+
+        path = str(TEST_LOG_DIR / "test_10samples.eval")
+        py_result = _py_read_eval_file(path, header_only=True)
+        native_result = read_eval_file(path, header_only=True)
+
+        assert py_result["samples"] is None
+        assert native_result["samples"] is None
+        assert py_result["header"] == native_result["header"]
+
+    def test_py_read_eval_sample(self):
+        from inspect_fast_loader._zip import _py_read_eval_sample, read_eval_sample
+        from helpers import TEST_LOG_DIR
+
+        path = str(TEST_LOG_DIR / "test_10samples.eval")
+        entry = "samples/1_epoch_1.json"
+        py_result = _py_read_eval_sample(path, entry)
+        native_result = read_eval_sample(path, entry)
+
+        assert py_result == native_result
+        assert py_result["id"] == 1
+
+    def test_py_read_eval_summaries(self):
+        from inspect_fast_loader._zip import _py_read_eval_summaries, read_eval_summaries
+        from helpers import TEST_LOG_DIR
+
+        path = str(TEST_LOG_DIR / "test_10samples.eval")
+        py_result = _py_read_eval_summaries(path)
+        native_result = read_eval_summaries(path)
+
+        assert len(py_result) == len(native_result)
+        for py_s, native_s in zip(py_result, native_result):
+            assert py_s["id"] == native_s["id"]
+            assert py_s["epoch"] == native_s["epoch"]
+
+    def test_py_read_eval_headers_batch(self):
+        from inspect_fast_loader._zip import _py_read_eval_headers_batch, read_eval_headers_batch
+        from helpers import TEST_LOG_DIR
+
+        paths = [str(f) for f in sorted(TEST_LOG_DIR.glob("batch_*.eval"))[:5]]
+        py_results = _py_read_eval_headers_batch(paths)
+        native_results = read_eval_headers_batch(paths)
+
+        assert len(py_results) == len(native_results)
+        for py_r, native_r in zip(py_results, native_results):
+            assert py_r["header"] == native_r["header"]
+            assert py_r["has_header_json"] == native_r["has_header_json"]

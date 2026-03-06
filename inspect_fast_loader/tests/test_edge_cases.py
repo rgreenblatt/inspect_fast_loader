@@ -36,7 +36,7 @@ class TestCorruptedZipFiles:
         tmp.write(b"PK\x03\x04" + b"\x00" * 100)
         tmp.close()
         try:
-            with pytest.raises(Exception):
+            with pytest.raises(ValueError, match="Invalid ZIP"):
                 read_eval_file(tmp.name)
         finally:
             os.unlink(tmp.name)
@@ -47,7 +47,7 @@ class TestCorruptedZipFiles:
         tmp.write(b"this is not a zip file")
         tmp.close()
         try:
-            with pytest.raises(Exception):
+            with pytest.raises(ValueError, match="Invalid ZIP"):
                 read_eval_file(tmp.name)
         finally:
             os.unlink(tmp.name)
@@ -57,7 +57,7 @@ class TestCorruptedZipFiles:
         tmp = tempfile.NamedTemporaryFile(suffix=".eval", delete=False)
         tmp.close()
         try:
-            with pytest.raises(Exception):
+            with pytest.raises(ValueError, match="Invalid ZIP"):
                 read_eval_file(tmp.name)
         finally:
             os.unlink(tmp.name)
@@ -68,7 +68,7 @@ class TestCorruptedZipFiles:
         tmp.write(b"not a zip")
         tmp.close()
         try:
-            with pytest.raises(Exception):
+            with pytest.raises(RuntimeError, match="Invalid ZIP"):
                 _read_eval_headers_batch_raw([tmp.name])
         finally:
             os.unlink(tmp.name)
@@ -84,7 +84,7 @@ class TestMissingZipEntries:
             zf.writestr("dummy.txt", "hello")
         tmp.close()
         try:
-            with pytest.raises(Exception):
+            with pytest.raises(KeyError, match="not found"):
                 read_eval_file(tmp.name)
         finally:
             os.unlink(tmp.name)
@@ -257,7 +257,7 @@ class TestFileNotFound:
             read_eval_summaries("/nonexistent/path.eval")
 
     def test_batch_headers_nonexistent_file(self):
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError, match="Failed to open"):
             _read_eval_headers_batch_raw(["/nonexistent/path.eval"])
 
     def test_patched_sample_read_not_found(self):

@@ -472,21 +472,21 @@ class TestModelDumpRoundtrip:
         if not os.path.exists(path):
             pytest.skip("Test file not found")
         d = read_eval_log(path).model_dump()
-        json.dumps(d, default=str)
+        json.dumps(d, allow_nan=True)
 
     def test_full_read_json(self):
         path = str(TEST_LOG_DIR / "test_10samples.json")
         if not os.path.exists(path):
             pytest.skip("Test file not found")
         d = read_eval_log(path).model_dump()
-        json.dumps(d, default=str)
+        json.dumps(d, allow_nan=True)
 
     def test_single_sample(self):
         path = str(TEST_LOG_DIR / "test_10samples.eval")
         if not os.path.exists(path):
             pytest.skip("Test file not found")
         d = read_eval_log_sample(path, id=1, epoch=1).model_dump()
-        json.dumps(d, default=str)
+        json.dumps(d, allow_nan=True)
 
 
 # ---- String IDs ----
