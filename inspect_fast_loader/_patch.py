@@ -50,7 +50,7 @@ def _resolve_path(log_file: str | Path | EvalLogInfo) -> str:
     if isinstance(log_file, str):
         return log_file
     elif isinstance(log_file, Path):
-        return log_file.as_posix()
+        return str(log_file)
     elif isinstance(log_file, EvalLogInfo):
         return log_file.name
     else:
