@@ -6,13 +6,10 @@ valid data loadable by inspect's existing Python code.
 
 import argparse
 import json
-import math
 import os
 import random
 import zipfile
-from datetime import datetime, timezone
 from io import BytesIO
-from pathlib import Path
 from typing import Any
 
 # --------------------------------------------------------------------------- #
@@ -131,7 +128,7 @@ def make_chat_message_tool(rng: random.Random) -> dict:
 def make_messages(rng: random.Random, n_turns: int = 5) -> list[dict]:
     """Generate a realistic conversation history."""
     messages = [make_chat_message_system(rng)]
-    for i in range(n_turns):
+    for _ in range(n_turns):
         use_content_list = rng.random() < 0.2
         messages.append(make_chat_message_user(rng, use_content_list))
         include_tool_calls = rng.random() < 0.3
