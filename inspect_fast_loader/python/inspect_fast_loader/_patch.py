@@ -113,8 +113,16 @@ def _fast_read_eval_log_impl(
     fmt = _detect_format(path, format)
 
     if fmt == "eval":
-        raw = read_eval_file(path, header_only)
-        log = _build_eval_log_from_eval_file(raw, path, header_only)
+        if header_only:
+            # For header-only .eval reads, fall back to the original. The original
+            # uses AsyncZipReader with targeted range reads (only reads the EOCD +
+            # central directory + header.json entry). Our Rust zip crate opens the
+            # full ZIP and parses the entire central directory, which is slower for
+            # large files. The per-file speedup from Rust is modest even for small
+            # files, while the regression for large files is significant.
+            return _originals["read_eval_log"](log_file, header_only, resolve_attachments, format)
+        raw = read_eval_file(path, header_only=False)
+        log = _build_eval_log_from_eval_file(raw, path, header_only=False)
     elif fmt == "json":
         # For .json format, fall back to the original Python implementation.
         # pydantic_core.from_json() is already Rust-backed and optimized
@@ -161,11 +169,11 @@ async def _fast_read_eval_log_async_impl(
     path = _resolve_path(log_file)
     fmt = _detect_format(path, format)
 
-    # For .json format, fall back to original (pydantic_core.from_json is already Rust-backed)
-    if fmt == "json":
+    # Fall back to original for: .json format, header-only .eval reads
+    if fmt == "json" or header_only:
         return await _originals["read_eval_log_async"](log_file, header_only, resolve_attachments, format)
 
-    # Run synchronous Rust I/O in a thread
+    # Run synchronous Rust I/O in a thread (only .eval full reads)
     return await asyncio.to_thread(
         _fast_read_eval_log_impl, log_file, header_only, resolve_attachments, format
     )
@@ -180,30 +188,44 @@ def _fast_read_eval_log_headers_impl(
     return run_coroutine(_fast_read_eval_log_headers_async_impl(log_files, progress))
 
 
+def _read_eval_header_rust(log_file: str | Path | EvalLogInfo) -> EvalLog:
+    """Read a single .eval header using Rust (for batch parallelism)."""
+    path = _resolve_path(log_file)
+    raw = read_eval_file(path, header_only=True)
+    return _build_eval_log_from_eval_file(raw, path, header_only=True)
+
+
 async def _fast_read_eval_log_headers_async_impl(
     log_files: list[str] | list[Path] | list[EvalLogInfo],
     progress: Any = None,
 ) -> list[EvalLog]:
     """Async fast implementation of read_eval_log_headers.
 
-    Uses the patched read_eval_log_async (which goes through Rust) for each file,
-    with asyncio concurrency for parallelism across files.
+    For .eval files, uses asyncio.to_thread with Rust for true thread parallelism.
+    For .json files, falls back to original via the patched read_eval_log_async.
     """
     if progress:
         progress.before_reading_logs(len(log_files))
 
-    # Get the patched read_eval_log_async (which is the fast version)
     read_fn = getattr(_file_module, "read_eval_log_async")
 
     async def _read(lf: str | Path | EvalLogInfo) -> EvalLog:
-        log = await read_fn(lf, header_only=True)
+        path = _resolve_path(lf)
+        fmt = _detect_format(path, "auto")
+
+        if fmt == "eval":
+            # Use Rust in a thread for true parallelism across files
+            log = await asyncio.to_thread(_read_eval_header_rust, lf)
+        else:
+            # Fall back to original for .json
+            log = await read_fn(lf, header_only=True)
+
         if progress:
             progress.after_read_log(
                 lf.name if isinstance(lf, EvalLogInfo) else str(lf),
             )
         return log
 
-    # Run all reads concurrently
     tasks = [_read(lf) for lf in log_files]
     return list(await asyncio.gather(*tasks))
 

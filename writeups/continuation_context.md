@@ -21,7 +21,7 @@ Build Rust extension: `cd inspect_fast_loader && PATH=../.venv/bin:$PATH maturin
 - For `.eval` files, the speedup comes from faster per-sample JSON parsing and ZIP decompression in Rust, despite still using Pydantic model_validate.
 
 ## Current State
-Phase `core_rust_implementation` is complete. Core Rust-accelerated reading works for both formats with 2.19x speedup on .eval 1000-sample full reads.
+Phase `core_rust_implementation` is complete. Core Rust-accelerated reading works for .eval full reads with ~2x speedup on 1000-sample files. Falls back to original for .json format, header-only reads, and IO[bytes] input.
 
 ## Phase-specific write-ups
 - `writeups/write_up_core_rust_implementation.md` — Core implementation write-up with benchmark results and plots

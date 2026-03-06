@@ -1,5 +1,19 @@
 # Progress Log: core_rust_implementation
 
+## Code quality fixes and header-only fallback 03/05/2026 23:17 - commit pending
+
+### What was done
+- Code quality review found several issues; all fixed
+- Added fallback to original for single-file header-only .eval reads (eliminates 4.5x regression for 1000-sample files)
+- Batch headers still use Rust in threads for parallelism (3.77x speedup for 50 files)
+- Removed unused logging import, duplicate results file, unnecessary summaries.json parsing
+- Added operator precedence parentheses, -Infinity boundary guard, fixed unused variables
+
+### Key findings
+- Single-file header-only .eval: Rust zip crate parses full central directory, slower than original's targeted reads
+- Batch headers benefit enormously from true thread parallelism (asyncio.to_thread + asyncio.gather): 3.77x
+- Final benchmark profile: no regressions anywhere, speedups on .eval full reads (2.12x) and batch headers (3.77x)
+
 ## Optimized .json handling: fall back to original 03/05/2026 23:05 - commit 9bea610
 
 ### What was done
