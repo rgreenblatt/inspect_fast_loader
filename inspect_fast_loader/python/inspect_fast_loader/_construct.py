@@ -448,7 +448,14 @@ def _construct_event(data: dict) -> Any:
             data["message"] = _construct_logging_message(data["message"])
     elif event_type == "sample_init":
         if "sample" in data and isinstance(data["sample"], dict):
-            data["sample"] = _fast_construct(Sample, data["sample"])
+            sample_data = data["sample"]
+            # Sample.input can be a list of ChatMessage dicts
+            if isinstance(sample_data.get("input"), list):
+                sample_data["input"] = [
+                    _construct_message(m) if isinstance(m, dict) else m
+                    for m in sample_data["input"]
+                ]
+            data["sample"] = _fast_construct(Sample, sample_data)
     elif event_type == "subtask":
         # Replicate SubtaskEvent.validate_input (field_validator mode="before"):
         # converts non-dict input to {} for backward compatibility
