@@ -366,3 +366,94 @@ def test_bypass_attribute_access():
     for event in sample.events:
         assert hasattr(event, "event")
         assert hasattr(event, "timestamp")
+
+
+# ---- Deprecated field migrations ----
+
+def test_bypass_deprecated_score_field():
+    """Test that deprecated 'score' field is migrated to 'scores' dict."""
+    sample_data = {
+        "id": 1,
+        "epoch": 1,
+        "input": "test input",
+        "target": "test target",
+        "score": {"value": 1, "answer": "yes", "explanation": None},
+        "messages": [],
+        "events": [],
+    }
+    ctx = get_deserializing_context()
+
+    # model_validate handles the migration
+    validated = EvalSample.model_validate(dict(sample_data), context=ctx)
+    # construct_sample_fast should also handle it
+    constructed = construct_sample_fast(dict(sample_data))
+
+    # Both should have "88F74D2C" key (scorer placeholder)
+    assert validated.scores is not None
+    assert constructed.scores is not None
+    assert "88F74D2C" in validated.scores
+    assert "88F74D2C" in constructed.scores
+
+    # Values should match
+    v_dump = validated.model_dump()
+    c_dump = constructed.model_dump()
+    diffs = _deep_compare(v_dump, c_dump)
+    assert not diffs, f"Deprecated score migration differences: {diffs[:10]}"
+
+
+def test_bypass_deprecated_transcript_field():
+    """Test that deprecated 'transcript' field is migrated to 'events' + 'attachments'."""
+    sample_data = {
+        "id": 1,
+        "epoch": 1,
+        "input": "test input",
+        "target": "test target",
+        "transcript": {
+            "events": [
+                {"event": "state", "timestamp": "2024-01-01T00:00:00+00:00",
+                 "working_start": 0.0, "changes": []},
+            ],
+            "content": {"key1": "value1"},
+        },
+        "messages": [],
+    }
+
+    constructed = construct_sample_fast(dict(sample_data))
+
+    # Transcript should be migrated to events and attachments
+    assert len(constructed.events) == 1
+    assert constructed.events[0].event == "state"
+    assert constructed.attachments == {"key1": "value1"}
+    # The 'transcript' key should not be in __dict__ (migrated away)
+    assert "transcript" not in constructed.__dict__
+
+    # Note: we don't compare model_dump with model_validate here because
+    # the original migrate_deprecated constructs EvalEvents without context,
+    # which generates random UUIDs for events — making comparison non-deterministic.
+
+
+def test_bypass_sandbox_list_migration():
+    """Test that sandbox list format is migrated to SandboxEnvironmentSpec."""
+    sample_data = {
+        "id": 1,
+        "epoch": 1,
+        "input": "test input",
+        "target": "test target",
+        "sandbox": ["docker", "config.yaml"],
+        "messages": [],
+        "events": [],
+    }
+    ctx = get_deserializing_context()
+
+    validated = EvalSample.model_validate(dict(sample_data), context=ctx)
+    constructed = construct_sample_fast(dict(sample_data))
+
+    assert validated.sandbox is not None
+    assert constructed.sandbox is not None
+    assert validated.sandbox.type == "docker"
+    assert constructed.sandbox.type == "docker"
+
+    v_dump = validated.model_dump()
+    c_dump = constructed.model_dump()
+    diffs = _deep_compare(v_dump, c_dump)
+    assert not diffs, f"Sandbox list migration differences: {diffs[:10]}"
