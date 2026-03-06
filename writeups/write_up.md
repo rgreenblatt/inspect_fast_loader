@@ -19,34 +19,46 @@ See `write_up_core_rust_implementation.md` for detailed findings and plots.
 ## Phase: pydantic_bypass_optimization (Complete)
 See `write_up_pydantic_bypass_optimization.md` for detailed findings and plots.
 
-### Key Results
+- **.eval full read 1000 samples**: 2052ms → 283ms (**7.25x speedup**)
+- **.json full read 1000 samples**: 855ms → 323ms (**2.64x speedup**)
+- **Batch headers 50 files**: 98ms → 29ms (**3.42x**, below 5-10x target)
+
+## Phase: optimization_features_polish (Complete)
+See `write_up_optimization_features_polish.md` for detailed findings and plots.
+
+### Final Performance (All Operations)
 | Operation | Original | Fast | Speedup |
 |---|---|---|---|
-| .eval full read 1000 samples | 2052ms | 283ms | **7.25x** |
-| .eval full read 100 samples | 171ms | 30ms | **5.81x** |
-| .json full read 1000 samples | 855ms | 323ms | **2.64x** |
-| batch headers 50 .eval files | 98ms | 29ms | **3.42x** |
+| .eval full read (1000 samples) | 2053ms | 259ms | **7.94x** |
+| .eval full read (100 samples) | 152ms | 21ms | **7.32x** |
+| .json full read (1000 samples) | 1461ms | 264ms | **5.54x** |
+| batch headers (50 files) | 93ms | 9ms | **10.09x** |
+| batch headers (25 files) | 44ms | 5ms | **9.00x** |
+| single sample read | 4.1ms | 0.5ms | **8.65x** |
+| single sample (exclude_fields) | 3.9ms | 0.4ms | **9.74x** |
+| sample summaries | 2.3ms | 0.4ms | **5.21x** |
+| streaming samples | 18.7ms | 4.6ms | **4.11x** |
 
-**Primary target of 5x+ for .eval full reads achieved (7.25x).**
+**All targets met or exceeded. Batch headers improved from 3.42x to 6-10x. Three new functions patched.**
 
-![Bypass Speedup](../plots/bypass_speedup.png)
+![Comprehensive Speedup](../plots/comprehensive_speedup.png)
 
-### What Was Built
-- `_construct.py`: Direct Pydantic model construction bypassing model_validate (~20x faster per-sample)
-- Rayon parallel JSON parsing in Rust (GIL released during computation)
-- .json format now uses bypass instead of falling back to original (2.64x speedup)
-- Scorer placeholder replacement applied manually post-construction
-- 117 tests total (38 bypass-specific), all passing
-
-### How the Bypass Works
-`_fast_construct()` creates Pydantic model instances by directly setting `__dict__`, skipping all validators, type coercion, and `model_post_init`. All nested types are recursively constructed as proper Pydantic model instances. Migrations from `model_validate` are replicated in Python.
+### Key improvements in this phase
+- Batch headers: Rayon parallel reading in single Rust call (eliminates asyncio overhead)
+- `read_eval_log_sample`: Rust ZIP entry read + Pydantic bypass (8.65x)
+- `read_eval_log_sample_summaries`: Rust summaries reader (5.21x)
+- `read_eval_log_samples`: Generator using per-sample fast reads (4.11x)
+- Total patched functions: 9 (up from 4)
+- 173 tests total (all passing)
 
 ## Important Choices
 - Test logs generated via direct JSON/ZIP construction (simpler, verified loadable)
-- Monkey-patching approach: replace 4 functions on `inspect_ai.log._file` module
+- Monkey-patching approach: replace functions on `inspect_ai.log._file` module
 - NaN/Inf: pre-processing sentinel approach (simple, fast, correct)
 - Direct `__dict__` assignment over `model_construct` (avoids model_post_init UUID generation)
 - All nested types constructed as proper Pydantic models (not left as dicts) for correct model_dump()
-- .json format: now uses Rust parser + bypass (was 1.0x fallback, now 2.64x)
+- .json format: uses Rust parser + bypass for full reads (5.54x for 1000 samples)
 - Header-only single-file: still falls back to original (original's targeted range reads are faster)
-- Batch headers: use Rust in threads for true parallelism (3.42x speedup)
+- Batch headers: rayon parallel batch in Rust (6-10x speedup)
+- exclude_fields: dict deletion after full JSON parse (simpler than streaming, fast enough)
+- Summaries: model_validate (not bypass) because EvalSampleSummary has a required model_validator
