@@ -232,7 +232,7 @@ def _construct_message(data: dict) -> Any:
     # Migrates deprecated "tool_error" field to "error" as ToolCallError
     if role == "tool" and "tool_error" in data:
         tool_error = data.pop("tool_error")
-        if tool_error and "error" not in data:
+        if tool_error:
             data["error"] = ToolCallError("unknown", tool_error)
 
     # Process content if it's a list of content objects
