@@ -32,3 +32,23 @@
 - All 173 tests pass (56 new)
 - Total patched functions: 9 (up from 4)
 - .json single-sample reads fall back to original (reading entire file)
+
+## Large log testing and write-up finalization 03/06/2026 02:21 - commit 1862d8f
+
+### What was done
+- Generated 5000-sample test log (11MB .eval file)
+- Tested all operations on 5000-sample log: full read, single sample, summaries
+- Created phase write-ups and updated all documentation
+
+### Key findings
+- 5000-sample .eval full read: 9642ms → 3884ms (2.48x) — lower speedup due to Python construction loop being bottleneck at this scale
+  - Rust read+parse: 718ms, Python construction: 1950ms
+  - Still much faster than original's ~9.6s model_validate
+- Single sample from 5000-sample log: 34ms (higher due to larger ZIP overhead)
+- Summaries from 5000-sample log: 408ms for 5000 summaries
+- No memory issues or crashes with large logs
+- Benchmark doesn't compare 3 configs as Task 6 suggested (Rust+model_validate intermediate config not easily available) — only compares original vs current fast
+
+### Notes
+- For very large logs (5000+), Python construction loop dominates. To improve further would need to move construction to Rust, which is a much larger undertaking.
+- All documentation updated: write_up_optimization_features_polish.md, write_up.md, continuation_context.md
