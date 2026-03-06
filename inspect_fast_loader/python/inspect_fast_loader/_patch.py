@@ -493,9 +493,8 @@ def _fast_read_eval_log_samples_impl(
 ) -> Generator[EvalSample, None, None]:
     """Fast implementation of read_eval_log_samples.
 
-    For .eval files, reads all samples at once using the fast full-read path
-    then yields them one at a time. This is faster than reading samples
-    individually since the full read uses rayon parallel parsing.
+    For .eval files, reads individual samples using the fast single-sample
+    reader (Rust ZIP entry read + Pydantic bypass), yielding them one at a time.
     """
     path = _resolve_path(log_file)
     fmt = _detect_format(path, format)

@@ -278,7 +278,7 @@ def _construct_model_output(data: dict) -> ModelOutput:
 
 from inspect_ai._util.json import JsonChange
 from inspect_ai.model._generate_config import GenerateConfig
-from inspect_ai.tool._tool_call import ToolCall
+from inspect_ai.tool._tool_call import ToolCall, ToolCallContent, ToolCallError, ToolCallView
 
 
 def _construct_json_change(data: dict) -> JsonChange:
@@ -295,6 +295,25 @@ def _construct_tool_call(data: dict) -> ToolCall:
         view=data.get("view"),
         type=data.get("type", "function"),
     )
+
+
+def _construct_tool_call_error(data: dict) -> ToolCallError:
+    """Construct a ToolCallError (plain dataclass) from a dict."""
+    return ToolCallError(type=data["type"], message=data["message"])
+
+
+def _construct_tool_call_content(data: dict) -> ToolCallContent:
+    """Construct a ToolCallContent (BaseModel) from a dict."""
+    return _fast_construct(ToolCallContent, data)
+
+
+def _construct_tool_call_view(data: dict) -> ToolCallView:
+    """Construct a ToolCallView (BaseModel) from a dict."""
+    if "context" in data and isinstance(data["context"], dict):
+        data["context"] = _construct_tool_call_content(data["context"])
+    if "call" in data and isinstance(data["call"], dict):
+        data["call"] = _construct_tool_call_content(data["call"])
+    return _fast_construct(ToolCallView, data)
 
 
 def _parse_timestamp(ts: Any) -> Any:
@@ -322,9 +341,11 @@ def _construct_event(data: dict) -> Any:
     if cls is None:
         return data
 
-    # Convert timestamp string to datetime (required by serializer)
+    # Convert timestamp strings to datetime (required by serializer)
     if "timestamp" in data:
         data["timestamp"] = _parse_timestamp(data["timestamp"])
+    if "completed" in data and data["completed"] is not None:
+        data["completed"] = _parse_timestamp(data["completed"])
 
     # Construct nested objects within specific event types
     if event_type in ("state", "store"):
@@ -343,6 +364,18 @@ def _construct_event(data: dict) -> Any:
             data["output"] = _construct_model_output(data["output"])
         if "config" in data and isinstance(data["config"], dict):
             data["config"] = _fast_construct(GenerateConfig, data["config"])
+    elif event_type == "tool":
+        if "error" in data and isinstance(data["error"], dict):
+            data["error"] = _construct_tool_call_error(data["error"])
+        if "view" in data and isinstance(data["view"], dict):
+            data["view"] = _construct_tool_call_content(data["view"])
+    elif event_type == "approval":
+        if "call" in data and isinstance(data["call"], dict):
+            data["call"] = _construct_tool_call(data["call"])
+        if "modified" in data and isinstance(data["modified"], dict):
+            data["modified"] = _construct_tool_call(data["modified"])
+        if "view" in data and isinstance(data["view"], dict):
+            data["view"] = _construct_tool_call_view(data["view"])
     elif event_type == "score":
         if "score" in data and isinstance(data["score"], dict):
             data["score"] = _construct_score(data["score"])

@@ -561,3 +561,85 @@ def test_construct_message_all_roles():
         msg = _construct_message({"role": role, "content": f"hello from {role}"})
         assert msg.role == role
         assert msg.content == f"hello from {role}"
+
+
+def test_construct_event_with_completed_timestamp():
+    """Test that events with 'completed' field correctly convert to datetime."""
+    from datetime import datetime
+
+    for event_type in ["tool", "model", "sandbox", "subtask"]:
+        data = {
+            "event": event_type,
+            "timestamp": "2024-01-01T00:00:00+00:00",
+            "completed": "2024-01-01T00:00:05+00:00",
+            "working_start": 0.0,
+        }
+        # Add required fields for specific event types
+        if event_type == "tool":
+            data["function"] = "test_fn"
+            data["arguments"] = {}
+        elif event_type == "model":
+            data["model"] = "test-model"
+            data["input"] = []
+            data["output"] = {"model": "m", "choices": []}
+
+        event = _construct_event(data)
+        assert isinstance(event.timestamp, datetime), f"{event_type}: timestamp should be datetime"
+        assert isinstance(event.completed, datetime), f"{event_type}: completed should be datetime"
+        # model_dump should work without errors
+        d = event.model_dump()
+        assert d["completed"] is not None
+
+
+def test_construct_tool_event_with_error_and_view():
+    """Test that ToolEvent error and view fields are properly constructed."""
+    from inspect_ai.tool._tool_call import ToolCallContent, ToolCallError
+
+    data = {
+        "event": "tool",
+        "timestamp": "2024-01-01T00:00:00+00:00",
+        "function": "test_fn",
+        "arguments": {},
+        "result": "output",
+        "error": {"type": "timeout", "message": "Tool timed out"},
+        "view": {"title": "Output", "format": "text", "content": "tool output"},
+        "working_start": 0.0,
+    }
+
+    event = _construct_event(data)
+    assert isinstance(event.error, ToolCallError)
+    assert event.error.type == "timeout"
+    assert event.error.message == "Tool timed out"
+    assert isinstance(event.view, ToolCallContent)
+    assert event.view.title == "Output"
+    # model_dump should work
+    d = event.model_dump()
+    assert d["error"]["type"] == "timeout"
+    assert d["view"]["title"] == "Output"
+
+
+def test_construct_approval_event():
+    """Test that ApprovalEvent nested fields are properly constructed."""
+    from inspect_ai.tool._tool_call import ToolCall, ToolCallView
+
+    data = {
+        "event": "approval",
+        "timestamp": "2024-01-01T00:00:00+00:00",
+        "call": {"id": "tc1", "function": "bash", "arguments": {"cmd": "ls"}, "type": "function"},
+        "view": {
+            "context": {"title": "Ctx", "format": "text", "content": "context"},
+            "call": {"title": "Call", "format": "markdown", "content": "call info"},
+        },
+        "modified": {"id": "tc2", "function": "bash", "arguments": {"cmd": "pwd"}, "type": "function"},
+        "working_start": 0.0,
+    }
+
+    event = _construct_event(data)
+    assert isinstance(event.call, ToolCall)
+    assert event.call.function == "bash"
+    assert isinstance(event.view, ToolCallView)
+    assert isinstance(event.modified, ToolCall)
+    # model_dump should work
+    d = event.model_dump()
+    assert d["call"]["function"] == "bash"
+    assert d["view"]["context"]["title"] == "Ctx"
