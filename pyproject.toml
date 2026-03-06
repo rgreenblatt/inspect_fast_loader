@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=68.0", "setuptools-rust>=1.7"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,6 +10,12 @@ dependencies = ["inspect_ai"]
 
 [tool.setuptools.packages.find]
 include = ["inspect_fast_loader*"]
+
+[[tool.setuptools-rust.ext-modules]]
+target = "inspect_fast_loader._native"
+path = "rust/Cargo.toml"
+binding = "PyO3"
+optional = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
