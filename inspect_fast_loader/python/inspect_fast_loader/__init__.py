@@ -1,0 +1,12 @@
+"""inspect_fast_loader: High-performance Rust-based log loading for inspect_ai."""
+
+from inspect_fast_loader._native import list_zip_entries, parse_json_bytes, read_zip_member
+from inspect_fast_loader._patch import patch, unpatch
+
+__all__ = [
+    "parse_json_bytes",
+    "list_zip_entries",
+    "read_zip_member",
+    "patch",
+    "unpatch",
+]

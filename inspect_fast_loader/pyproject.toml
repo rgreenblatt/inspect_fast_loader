@@ -1,0 +1,13 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "inspect_fast_loader"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.maturin]
+python-source = "python"
+module-name = "inspect_fast_loader._native"
+features = ["pyo3/extension-module"]

@@ -1,0 +1,36 @@
+.venv
+file_cache_dir
+total_cost.jsonl
+__pycache__/
+*.pyc
+/.claude
+change_status.json
+INSTRUCTIONS.md
+OVERALL_PLAN.md
+WORKER_INSTRUCTIONS.md
+CHANGE_STATUS_INSTRUCTIONS.md
+.deep_disable_autonomous_task_loop
+
+# API keys and secrets
+.env
+.env.*
+*_api_key_*
+*_apikey_*
+*.api_key
+*.apikey
+secrets.json
+secrets.yaml
+secrets.yml
+credentials.json
+credentials.yaml
+credentials.yml
+
+# Test artifacts
+test_logs/
+.pytest_cache/
+
+# Rust build artifacts
+inspect_fast_loader/target/
+inspect_ai_repo/
+*.so
+*.egg-info/
