@@ -8,6 +8,9 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = ["inspect_ai"]
 
+[project.scripts]
+fast-inspect = "inspect_fast_loader._cli:main"
+
 [tool.setuptools.packages.find]
 include = ["inspect_fast_loader*"]
 
