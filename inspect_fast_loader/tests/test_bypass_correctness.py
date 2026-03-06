@@ -639,7 +639,120 @@ def test_construct_approval_event():
     assert event.call.function == "bash"
     assert isinstance(event.view, ToolCallView)
     assert isinstance(event.modified, ToolCall)
-    # model_dump should work
     d = event.model_dump()
     assert d["call"]["function"] == "bash"
     assert d["view"]["context"]["title"] == "Ctx"
+
+
+def test_construct_error_event():
+    """Test that ErrorEvent.error is properly constructed as EvalError."""
+    from inspect_ai._util.error import EvalError
+
+    data = {
+        "event": "error",
+        "timestamp": "2024-01-01T00:00:00+00:00",
+        "error": {"message": "something failed", "traceback": "tb", "traceback_ansi": "tb_ansi"},
+        "working_start": 0.0,
+    }
+    event = _construct_event(data)
+    assert isinstance(event.error, EvalError)
+    assert event.error.message == "something failed"
+    d = event.model_dump()
+    assert d["error"]["message"] == "something failed"
+
+
+def test_construct_logger_event_with_level_migration():
+    """Test that LoggerEvent constructs LoggingMessage and migrates deprecated log levels."""
+    data = {
+        "event": "logger",
+        "timestamp": "2024-01-01T00:00:00+00:00",
+        "message": {
+            "level": "tools",  # deprecated level, should be migrated to "trace"
+            "message": "log message",
+            "created": 1000.0,
+            "filename": "test.py",
+            "module": "test",
+            "lineno": 42,
+        },
+        "working_start": 0.0,
+    }
+    event = _construct_event(data)
+    assert event.message.level == "trace"  # "tools" -> "trace" migration
+    d = event.model_dump()
+    assert d["message"]["level"] == "trace"
+
+
+def test_construct_score_edit_event():
+    """Test that ScoreEditEvent.edit is properly constructed as ScoreEdit."""
+    data = {
+        "event": "score_edit",
+        "timestamp": "2024-01-01T00:00:00+00:00",
+        "score_name": "accuracy",
+        "edit": {"value": 1, "answer": "yes", "explanation": "correct", "metadata": "UNCHANGED"},
+        "working_start": 0.0,
+    }
+    event = _construct_event(data)
+    from inspect_ai.scorer._metric import ScoreEdit
+    assert isinstance(event.edit, ScoreEdit)
+    assert event.edit.value == 1
+    d = event.model_dump()
+    assert d["edit"]["value"] == 1
+
+
+def test_construct_score_event_with_usage():
+    """Test that ScoreEvent model_usage and role_usage are properly constructed."""
+    from inspect_ai.model._model_output import ModelUsage
+
+    data = {
+        "event": "score",
+        "timestamp": "2024-01-01T00:00:00+00:00",
+        "score": {"value": 1},
+        "model_usage": {"gpt-4": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}},
+        "role_usage": {"solver": {"input_tokens": 80, "output_tokens": 40, "total_tokens": 120}},
+        "working_start": 0.0,
+    }
+    event = _construct_event(data)
+    assert isinstance(event.model_usage["gpt-4"], ModelUsage)
+    assert isinstance(event.role_usage["solver"], ModelUsage)
+    d = event.model_dump()
+    assert d["model_usage"]["gpt-4"]["input_tokens"] == 100
+
+
+def test_construct_model_event_with_tools_and_call():
+    """Test that ModelEvent tools, call, and tool_choice are properly constructed."""
+    from inspect_ai.tool._tool_info import ToolInfo
+    from inspect_ai.model._model_call import ModelCall
+    from inspect_ai.tool._tool_choice import ToolFunction
+
+    data = {
+        "event": "model",
+        "timestamp": "2024-01-01T00:00:00+00:00",
+        "model": "test",
+        "input": [],
+        "output": {"model": "m", "choices": []},
+        "tools": [{"name": "bash", "description": "run bash", "parameters": {"type": "object", "properties": {}}}],
+        "call": {"request": {"model": "test"}, "response": None},
+        "tool_choice": {"name": "bash"},
+        "working_start": 0.0,
+    }
+    event = _construct_event(data)
+    assert isinstance(event.tools[0], ToolInfo)
+    assert isinstance(event.call, ModelCall)
+    assert isinstance(event.tool_choice, ToolFunction)
+    d = event.model_dump()
+    assert d["tools"][0]["name"] == "bash"
+
+
+def test_construct_subtask_event_input_migration():
+    """Test that SubtaskEvent non-dict input is migrated to empty dict."""
+    data = {
+        "event": "subtask",
+        "timestamp": "2024-01-01T00:00:00+00:00",
+        "name": "my_subtask",
+        "input": ["not", "a", "dict"],
+        "working_start": 0.0,
+    }
+    event = _construct_event(data)
+    assert event.input == {}
+    d = event.model_dump()
+    assert d["input"] == {}

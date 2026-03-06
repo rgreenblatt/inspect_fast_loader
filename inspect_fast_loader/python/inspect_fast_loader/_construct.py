@@ -34,7 +34,7 @@ FRAGILITY WARNING:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel
@@ -278,7 +278,11 @@ def _construct_model_output(data: dict) -> ModelOutput:
 
 from inspect_ai._util.json import JsonChange
 from inspect_ai.model._generate_config import GenerateConfig
+from inspect_ai.model._model_call import ModelCall
 from inspect_ai.tool._tool_call import ToolCall, ToolCallContent, ToolCallError, ToolCallView
+from inspect_ai.tool._tool_info import ToolInfo
+from inspect_ai.tool._tool_choice import ToolFunction
+from inspect_ai.scorer._metric import ScoreEdit
 
 
 def _construct_json_change(data: dict) -> JsonChange:
@@ -314,6 +318,36 @@ def _construct_tool_call_view(data: dict) -> ToolCallView:
     if "call" in data and isinstance(data["call"], dict):
         data["call"] = _construct_tool_call_content(data["call"])
     return _fast_construct(ToolCallView, data)
+
+
+def _construct_logging_message(data: dict) -> Any:
+    """Construct a LoggingMessage with the convert_log_levels migration."""
+    # Replicate LoggingMessage.convert_log_levels (model_validator mode="before")
+    level = data.get("level")
+    if level in ("tools", "sandbox"):
+        data["level"] = "trace"
+    from inspect_ai.event._logger import LoggingMessage
+    return _fast_construct(LoggingMessage, data)
+
+
+def _construct_tool_info(data: dict) -> ToolInfo:
+    """Construct a ToolInfo (BaseModel) from a dict."""
+    if "parameters" in data and isinstance(data["parameters"], dict):
+        from inspect_ai.tool._tool_params import ToolParams
+        data["parameters"] = _fast_construct(ToolParams, data["parameters"])
+    return _fast_construct(ToolInfo, data)
+
+
+def _construct_model_call(data: dict) -> ModelCall:
+    return _fast_construct(ModelCall, data)
+
+
+def _construct_score_edit(data: dict) -> ScoreEdit:
+    """Construct a ScoreEdit (BaseModel) from a dict."""
+    if "provenance" in data and isinstance(data["provenance"], dict):
+        from inspect_ai.log._edit import ProvenanceData
+        data["provenance"] = _fast_construct(ProvenanceData, data["provenance"])
+    return _fast_construct(ScoreEdit, data)
 
 
 def _parse_timestamp(ts: Any) -> Any:
@@ -364,6 +398,16 @@ def _construct_event(data: dict) -> Any:
             data["output"] = _construct_model_output(data["output"])
         if "config" in data and isinstance(data["config"], dict):
             data["config"] = _fast_construct(GenerateConfig, data["config"])
+        if "tools" in data and isinstance(data["tools"], list):
+            data["tools"] = [
+                _construct_tool_info(t) if isinstance(t, dict) else t
+                for t in data["tools"]
+            ]
+        if "call" in data and isinstance(data["call"], dict):
+            data["call"] = _construct_model_call(data["call"])
+        # tool_choice can be a string ("auto"/"any"/"none") or a ToolFunction dict
+        if isinstance(data.get("tool_choice"), dict):
+            data["tool_choice"] = ToolFunction(name=data["tool_choice"]["name"])
     elif event_type == "tool":
         if "error" in data and isinstance(data["error"], dict):
             data["error"] = _construct_tool_call_error(data["error"])
@@ -379,9 +423,34 @@ def _construct_event(data: dict) -> Any:
     elif event_type == "score":
         if "score" in data and isinstance(data["score"], dict):
             data["score"] = _construct_score(data["score"])
+        if data.get("model_usage"):
+            data["model_usage"] = {
+                k: _construct_model_usage(v) if isinstance(v, dict) else v
+                for k, v in data["model_usage"].items()
+            }
+        if data.get("role_usage"):
+            data["role_usage"] = {
+                k: _construct_model_usage(v) if isinstance(v, dict) else v
+                for k, v in data["role_usage"].items()
+            }
     elif event_type == "score_edit":
-        if "score" in data and isinstance(data["score"], dict):
-            data["score"] = _construct_score(data["score"])
+        if "edit" in data and isinstance(data["edit"], dict):
+            data["edit"] = _construct_score_edit(data["edit"])
+    elif event_type == "error":
+        if "error" in data and isinstance(data["error"], dict):
+            data["error"] = _construct_eval_error(data["error"])
+    elif event_type == "logger":
+        if "message" in data and isinstance(data["message"], dict):
+            data["message"] = _construct_logging_message(data["message"])
+    elif event_type == "sample_init":
+        if "sample" in data and isinstance(data["sample"], dict):
+            from inspect_ai.dataset._dataset import Sample
+            data["sample"] = _fast_construct(Sample, data["sample"])
+    elif event_type == "subtask":
+        # Replicate SubtaskEvent.validate_input (field_validator mode="before"):
+        # converts non-dict input to {} for backward compatibility
+        if "input" in data and not isinstance(data["input"], dict):
+            data["input"] = {}
 
     return _fast_construct(cls, data)
 
