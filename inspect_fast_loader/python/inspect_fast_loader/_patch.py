@@ -1,8 +1,11 @@
 """Monkey-patching logic to replace inspect's log reading functions with fast Rust implementations.
 
-Patches both sync and async variants:
+Patches sync and async variants for:
 - read_eval_log / read_eval_log_async
 - read_eval_log_headers / read_eval_log_headers_async
+- read_eval_log_sample / read_eval_log_sample_async (new)
+- read_eval_log_sample_summaries / read_eval_log_sample_summaries_async (new)
+- read_eval_log_samples (new)
 
 The Rust layer handles JSON parsing (with NaN/Inf support) and ZIP decompression.
 For full reads, EvalSample construction bypasses Pydantic model_validate using
@@ -11,6 +14,7 @@ fast direct construction (_construct.py) for ~5x+ overall speedup.
 
 import asyncio
 import functools
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any, IO, Literal
 
@@ -19,12 +23,20 @@ from inspect_ai._util.constants import get_deserializing_context
 from inspect_ai.log._file import EvalLogInfo
 from inspect_ai.log._log import (
     EvalLog,
+    EvalSample,
     EvalSampleReductions,
+    EvalSampleSummary,
     sort_samples,
 )
 
 from inspect_fast_loader._construct import construct_sample_fast
-from inspect_fast_loader._native import read_eval_file, read_json_file
+from inspect_fast_loader._native import (
+    read_eval_file,
+    read_eval_headers_batch,
+    read_eval_sample as _rust_read_eval_sample,
+    read_eval_summaries as _rust_read_eval_summaries,
+    read_json_file,
+)
 
 SCORER_PLACEHOLDER = "88F74D2C"
 
@@ -260,46 +272,275 @@ def _fast_read_eval_log_headers_impl(
     return run_coroutine(_fast_read_eval_log_headers_async_impl(log_files, progress))
 
 
-def _read_eval_header_rust(log_file: str | Path | EvalLogInfo) -> EvalLog:
-    """Read a single .eval header using Rust (for batch parallelism)."""
-    path = _resolve_path(log_file)
-    raw = read_eval_file(path, header_only=True)
-    return _build_eval_log_from_eval_file(raw, path, header_only=True)
-
-
 async def _fast_read_eval_log_headers_async_impl(
     log_files: list[str] | list[Path] | list[EvalLogInfo],
     progress: Any = None,
 ) -> list[EvalLog]:
     """Async fast implementation of read_eval_log_headers.
 
-    For .eval files, uses asyncio.to_thread with Rust for true thread parallelism.
-    For .json files, falls back to original via the patched read_eval_log_async.
+    For .eval files, uses Rust batch header reading with rayon parallelism —
+    a single Rust call reads all headers in parallel OS threads, avoiding
+    per-file Python↔Rust boundary overhead and asyncio.to_thread overhead.
+
+    For .json files, falls back to original.
     """
     if progress:
         progress.before_reading_logs(len(log_files))
 
-    read_fn = getattr(_file_module, "read_eval_log_async")
+    # Partition into .eval and .json files
+    eval_indices: list[int] = []
+    eval_paths: list[str] = []
+    json_indices: list[int] = []
+    json_files: list[Any] = []
 
-    async def _read(lf: str | Path | EvalLogInfo) -> EvalLog:
+    for i, lf in enumerate(log_files):
         path = _resolve_path(lf)
         fmt = _detect_format(path, "auto")
-
         if fmt == "eval":
-            # Use Rust in a thread for true parallelism across files
-            log = await asyncio.to_thread(_read_eval_header_rust, lf)
+            eval_indices.append(i)
+            eval_paths.append(path)
         else:
-            # Fall back to original for .json
+            json_indices.append(i)
+            json_files.append(lf)
+
+    results: list[EvalLog | None] = [None] * len(log_files)
+
+    # Read all .eval headers in one Rust call (parallel via rayon)
+    if eval_paths:
+        batch_raws = await asyncio.to_thread(read_eval_headers_batch, eval_paths)
+        for idx, raw, path in zip(eval_indices, batch_raws, eval_paths):
+            results[idx] = _build_eval_log_from_eval_file(raw, path, header_only=True)
+            if progress:
+                progress.after_read_log(path)
+
+    # Fall back to original for .json files
+    if json_files:
+        read_fn = _originals.get("read_eval_log_async") or getattr(_file_module, "read_eval_log_async")
+
+        async def _read_json(idx: int, lf: Any) -> None:
             log = await read_fn(lf, header_only=True)
+            results[idx] = log
+            if progress:
+                progress.after_read_log(lf.name if isinstance(lf, EvalLogInfo) else str(lf))
 
-        if progress:
-            progress.after_read_log(
-                lf.name if isinstance(lf, EvalLogInfo) else str(lf),
-            )
-        return log
+        await asyncio.gather(*[_read_json(idx, lf) for idx, lf in zip(json_indices, json_files)])
 
-    tasks = [_read(lf) for lf in log_files]
-    return list(await asyncio.gather(*tasks))
+    return [r for r in results if r is not None]
+
+
+# ---------------------------------------------------------------------------
+# read_eval_log_sample patching
+# ---------------------------------------------------------------------------
+
+SAMPLES_DIR = "samples"
+
+
+def _sample_filename(id: str | int, epoch: int) -> str:
+    return f"{SAMPLES_DIR}/{id}_epoch_{epoch}.json"
+
+
+def _fast_read_eval_log_sample_impl(
+    log_file: str | Path | EvalLogInfo,
+    id: int | str | None = None,
+    epoch: int = 1,
+    uuid: str | None = None,
+    resolve_attachments: bool | Literal["full", "core"] = False,
+    format: Literal["eval", "json", "auto"] = "auto",
+    exclude_fields: set[str] | None = None,
+) -> EvalSample:
+    """Fast implementation of read_eval_log_sample using Rust for .eval files."""
+    if _is_bytes_input(log_file):
+        return _originals["read_eval_log_sample"](
+            log_file, id, epoch, uuid, resolve_attachments, format, exclude_fields
+        )
+
+    path = _resolve_path(log_file)
+    fmt = _detect_format(path, format)
+
+    # Only fast-path for .eval format
+    if fmt != "eval":
+        return _originals["read_eval_log_sample"](
+            log_file, id, epoch, uuid, resolve_attachments, format, exclude_fields
+        )
+
+    if id is None and uuid is None:
+        raise ValueError("You must specify either a sample 'id' and 'epoch' or a sample 'uuid'")
+
+    # If uuid specified, read summaries to find the matching sample's id and epoch
+    if id is None:
+        summaries = _rust_read_eval_summaries(path)
+        matched = next((s for s in summaries if s.get("uuid") == uuid), None)
+        if matched is None:
+            raise ValueError(f"Sample with uuid '{uuid}' not found in log.")
+        id = matched["id"]
+        epoch = matched["epoch"]
+
+    entry_name = _sample_filename(id, epoch)
+
+    try:
+        sample_data = _rust_read_eval_sample(path, entry_name)
+    except KeyError:
+        raise IndexError(f"Sample id {id} for epoch {epoch} not found in log {path}")
+
+    # Handle exclude_fields — delete excluded keys from the parsed dict
+    if exclude_fields:
+        for field in exclude_fields:
+            sample_data.pop(field, None)
+
+    sample = construct_sample_fast(sample_data)
+
+    # Replicate scorer placeholder replacement for this single sample
+    # We need the scorer name from the header for this
+    _populate_sample_scorer_placeholder(sample, path)
+
+    if resolve_attachments:
+        from inspect_ai.log._condense import resolve_sample_attachments
+        sample = resolve_sample_attachments(sample, resolve_attachments)
+
+    return sample
+
+
+def _populate_sample_scorer_placeholder(sample: EvalSample, path: str) -> None:
+    """Replace scorer placeholder in a single sample by reading the header."""
+    if not sample.scores or SCORER_PLACEHOLDER not in sample.scores:
+        return
+    # Read header to get scorer name
+    raw = read_eval_file(path, header_only=True)
+    header_data = raw["header"]
+    results = header_data.get("results")
+    if results and results.get("scores"):
+        scorer_name = results["scores"][0].get("name")
+        if scorer_name:
+            sample.scores[scorer_name] = sample.scores.pop(SCORER_PLACEHOLDER)
+
+
+async def _fast_read_eval_log_sample_async_impl(
+    log_file: str | Path | EvalLogInfo,
+    id: int | str | None = None,
+    epoch: int = 1,
+    uuid: str | None = None,
+    resolve_attachments: bool | Literal["full", "core"] = False,
+    format: Literal["eval", "json", "auto"] = "auto",
+    exclude_fields: set[str] | None = None,
+    reader: Any = None,
+) -> EvalSample:
+    """Async fast implementation of read_eval_log_sample."""
+    if _is_bytes_input(log_file) or reader is not None:
+        return await _originals["read_eval_log_sample_async"](
+            log_file, id, epoch, uuid, resolve_attachments, format, exclude_fields, reader
+        )
+
+    path = _resolve_path(log_file)
+    fmt = _detect_format(path, format)
+
+    if fmt != "eval":
+        return await _originals["read_eval_log_sample_async"](
+            log_file, id, epoch, uuid, resolve_attachments, format, exclude_fields, reader
+        )
+
+    return await asyncio.to_thread(
+        _fast_read_eval_log_sample_impl, log_file, id, epoch, uuid,
+        resolve_attachments, format, exclude_fields
+    )
+
+
+# ---------------------------------------------------------------------------
+# read_eval_log_sample_summaries patching
+# ---------------------------------------------------------------------------
+
+def _fast_read_eval_log_sample_summaries_impl(
+    log_file: str | Path | EvalLogInfo,
+    format: Literal["eval", "json", "auto"] = "auto",
+) -> list[EvalSampleSummary]:
+    """Fast implementation of read_eval_log_sample_summaries using Rust."""
+    path = _resolve_path(log_file)
+    fmt = _detect_format(path, format)
+
+    if fmt != "eval":
+        return _originals["read_eval_log_sample_summaries"](log_file, format)
+
+    ctx = get_deserializing_context()
+    summaries_data = _rust_read_eval_summaries(path)
+    return [
+        EvalSampleSummary.model_validate(s, context=ctx) for s in summaries_data
+    ]
+
+
+async def _fast_read_eval_log_sample_summaries_async_impl(
+    log_file: str | Path | EvalLogInfo,
+    format: Literal["eval", "json", "auto"] = "auto",
+) -> list[EvalSampleSummary]:
+    """Async fast implementation of read_eval_log_sample_summaries."""
+    path = _resolve_path(log_file)
+    fmt = _detect_format(path, format)
+
+    if fmt != "eval":
+        return await _originals["read_eval_log_sample_summaries_async"](log_file, format)
+
+    return await asyncio.to_thread(_fast_read_eval_log_sample_summaries_impl, log_file, format)
+
+
+# ---------------------------------------------------------------------------
+# read_eval_log_samples patching
+# ---------------------------------------------------------------------------
+
+def _fast_read_eval_log_samples_impl(
+    log_file: str | Path | EvalLogInfo,
+    all_samples_required: bool = True,
+    resolve_attachments: bool | Literal["full", "core"] = False,
+    format: Literal["eval", "json", "auto"] = "auto",
+    exclude_fields: set[str] | None = None,
+) -> Generator[EvalSample, None, None]:
+    """Fast implementation of read_eval_log_samples.
+
+    For .eval files, reads all samples at once using the fast full-read path
+    then yields them one at a time. This is faster than reading samples
+    individually since the full read uses rayon parallel parsing.
+    """
+    path = _resolve_path(log_file)
+    fmt = _detect_format(path, format)
+
+    if fmt != "eval":
+        yield from _originals["read_eval_log_samples"](
+            log_file, all_samples_required, resolve_attachments, format, exclude_fields
+        )
+        return
+
+    # Read header to get sample_ids and check status
+    read_log_fn = getattr(_file_module, "read_eval_log")
+    log_header = read_log_fn(log_file, header_only=True, format=format)
+
+    if log_header.eval.dataset.sample_ids is None:
+        raise RuntimeError(
+            "This log file does not include sample_ids "
+            + "(fully reading and re-writing the log will add sample_ids)"
+        )
+
+    if all_samples_required and (
+        log_header.status != "success" or log_header.invalidated
+    ):
+        raise RuntimeError(
+            f"This log does not have all samples (status={log_header.status}). "
+            + "Specify all_samples_required=False to read the samples that exist."
+        )
+
+    # For .eval: read individual samples using our fast single-sample reader
+    read_sample_fn = getattr(_file_module, "read_eval_log_sample")
+    for sample_id in log_header.eval.dataset.sample_ids:
+        for epoch_id in range(1, (log_header.eval.config.epochs or 1) + 1):
+            try:
+                sample = read_sample_fn(
+                    log_file=log_file,
+                    id=sample_id,
+                    epoch=epoch_id,
+                    resolve_attachments=resolve_attachments,
+                    format=format,
+                    exclude_fields=exclude_fields,
+                )
+                yield sample
+            except IndexError:
+                if all_samples_required:
+                    raise
 
 
 def patch() -> None:
@@ -309,7 +550,14 @@ def patch() -> None:
         return
 
     # Save originals
-    for name in ["read_eval_log", "read_eval_log_async", "read_eval_log_headers", "read_eval_log_headers_async"]:
+    _all_patched_names = [
+        "read_eval_log", "read_eval_log_async",
+        "read_eval_log_headers", "read_eval_log_headers_async",
+        "read_eval_log_sample", "read_eval_log_sample_async",
+        "read_eval_log_sample_summaries", "read_eval_log_sample_summaries_async",
+        "read_eval_log_samples",
+    ]
+    for name in _all_patched_names:
         _originals[name] = getattr(_file_module, name)
 
     # Create wrappers with proper attributes
@@ -332,6 +580,34 @@ def patch() -> None:
     async_headers._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
     async_headers._original = _originals["read_eval_log_headers_async"]  # type: ignore[attr-defined]
     setattr(_file_module, "read_eval_log_headers_async", async_headers)
+
+    # read_eval_log_sample
+    sync_sample = functools.wraps(_originals["read_eval_log_sample"])(_fast_read_eval_log_sample_impl)
+    sync_sample._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
+    sync_sample._original = _originals["read_eval_log_sample"]  # type: ignore[attr-defined]
+    setattr(_file_module, "read_eval_log_sample", sync_sample)
+
+    async_sample = functools.wraps(_originals["read_eval_log_sample_async"])(_fast_read_eval_log_sample_async_impl)
+    async_sample._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
+    async_sample._original = _originals["read_eval_log_sample_async"]  # type: ignore[attr-defined]
+    setattr(_file_module, "read_eval_log_sample_async", async_sample)
+
+    # read_eval_log_sample_summaries
+    sync_summaries = functools.wraps(_originals["read_eval_log_sample_summaries"])(_fast_read_eval_log_sample_summaries_impl)
+    sync_summaries._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
+    sync_summaries._original = _originals["read_eval_log_sample_summaries"]  # type: ignore[attr-defined]
+    setattr(_file_module, "read_eval_log_sample_summaries", sync_summaries)
+
+    async_summaries = functools.wraps(_originals["read_eval_log_sample_summaries_async"])(_fast_read_eval_log_sample_summaries_async_impl)
+    async_summaries._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
+    async_summaries._original = _originals["read_eval_log_sample_summaries_async"]  # type: ignore[attr-defined]
+    setattr(_file_module, "read_eval_log_sample_summaries_async", async_summaries)
+
+    # read_eval_log_samples (generator, sync only)
+    sync_samples = functools.wraps(_originals["read_eval_log_samples"])(_fast_read_eval_log_samples_impl)
+    sync_samples._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
+    sync_samples._original = _originals["read_eval_log_samples"]  # type: ignore[attr-defined]
+    setattr(_file_module, "read_eval_log_samples", sync_samples)
 
     _patched = True
 
