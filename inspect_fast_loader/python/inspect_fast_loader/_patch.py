@@ -95,6 +95,25 @@ def _is_bytes_input(log_file: Any) -> bool:
     return not isinstance(log_file, (str, Path, EvalLogInfo))
 
 
+def _fallback_to_original_sync(
+    log_file: str | Path | EvalLogInfo | IO[bytes],
+    header_only: bool,
+    resolve_attachments: bool | Literal["full", "core"],
+    format: Literal["eval", "json", "auto"],
+) -> EvalLog:
+    """Call the original read_eval_log_async directly, avoiding double-dispatch.
+
+    The original sync read_eval_log calls run_coroutine(read_eval_log_async(...)),
+    but since we patched read_eval_log_async on the module, that would route through
+    our patched async version before falling back again. Instead, we call the original
+    async function directly to avoid the extra hop.
+    """
+    from inspect_ai._util.concurrency import run_coroutine
+    return run_coroutine(
+        _originals["read_eval_log_async"](log_file, header_only, resolve_attachments, format)
+    )
+
+
 def _fast_read_eval_log_impl(
     log_file: str | Path | EvalLogInfo | IO[bytes],
     header_only: bool = False,
@@ -103,11 +122,11 @@ def _fast_read_eval_log_impl(
 ) -> EvalLog:
     """Fast implementation of read_eval_log using Rust parsing.
 
-    Falls back to original for IO[bytes] input.
+    Falls back to original for IO[bytes] input, .json format, and header-only .eval.
     """
     # Fall back to original for bytes input
     if _is_bytes_input(log_file):
-        return _originals["read_eval_log"](log_file, header_only, resolve_attachments, format)
+        return _fallback_to_original_sync(log_file, header_only, resolve_attachments, format)
 
     path = _resolve_path(log_file)
     fmt = _detect_format(path, format)
@@ -118,17 +137,15 @@ def _fast_read_eval_log_impl(
             # uses AsyncZipReader with targeted range reads (only reads the EOCD +
             # central directory + header.json entry). Our Rust zip crate opens the
             # full ZIP and parses the entire central directory, which is slower for
-            # large files. The per-file speedup from Rust is modest even for small
-            # files, while the regression for large files is significant.
-            return _originals["read_eval_log"](log_file, header_only, resolve_attachments, format)
+            # large files.
+            return _fallback_to_original_sync(log_file, header_only, resolve_attachments, format)
         raw = read_eval_file(path, header_only=False)
         log = _build_eval_log_from_eval_file(raw, path, header_only=False)
     elif fmt == "json":
         # For .json format, fall back to the original Python implementation.
         # pydantic_core.from_json() is already Rust-backed and optimized
-        # for producing Python objects from JSON. Our serde_json→Python dict
-        # conversion adds overhead rather than saving time.
-        return _originals["read_eval_log"](log_file, header_only, resolve_attachments, format)
+        # for producing Python objects from JSON.
+        return _fallback_to_original_sync(log_file, header_only, resolve_attachments, format)
     else:
         raise ValueError(f"Unknown format: {fmt}")
 
