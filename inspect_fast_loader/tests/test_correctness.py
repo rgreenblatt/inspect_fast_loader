@@ -45,7 +45,7 @@ def _approx_equal(a, b, rel_tol=1e-9, abs_tol=1e-12):
         if math.isnan(a) and math.isnan(b):
             return True
         if math.isinf(a) and math.isinf(b):
-            return a > 0 and b > 0 or a < 0 and b < 0
+            return (a > 0 and b > 0) or (a < 0 and b < 0)
         return math.isclose(a, b, rel_tol=rel_tol, abs_tol=abs_tol)
     return False
 

@@ -10,7 +10,6 @@ Python handles Pydantic model_validate for correctness (preserving all validator
 
 import asyncio
 import functools
-import logging
 from pathlib import Path
 from typing import Any, IO, Literal
 
@@ -25,8 +24,6 @@ from inspect_ai.log._log import (
 )
 
 from inspect_fast_loader._native import read_eval_file
-
-logger = logging.getLogger(__name__)
 
 # Store original functions so we can restore them
 _originals: dict[str, Any] = {}
@@ -91,7 +88,6 @@ def _build_eval_log_from_eval_file(raw: dict, path: str, header_only: bool) -> E
         log.samples = samples
 
     return log
-
 
 
 def _is_bytes_input(log_file: Any) -> bool:

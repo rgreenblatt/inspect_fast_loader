@@ -63,8 +63,8 @@ def plot_absolute_times(results: list[dict], output_path: str):
     x = np.arange(len(names))
     width = 0.35
 
-    bars1 = ax.bar(x - width / 2, orig_ms, width, label="Python Original", color="#3498db", edgecolor="black", linewidth=0.5)
-    bars2 = ax.bar(x + width / 2, fast_ms, width, label="Rust Accelerated", color="#e74c3c", edgecolor="black", linewidth=0.5)
+    ax.bar(x - width / 2, orig_ms, width, label="Python Original", color="#3498db", edgecolor="black", linewidth=0.5)
+    ax.bar(x + width / 2, fast_ms, width, label="Rust Accelerated", color="#e74c3c", edgecolor="black", linewidth=0.5)
 
     ax.set_xticks(x)
     ax.set_xticklabels(names, rotation=45, ha="right", fontsize=9)

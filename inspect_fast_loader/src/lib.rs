@@ -58,6 +58,7 @@ fn preprocess_nan_inf(input: &[u8]) -> (Vec<u8>, bool) {
         // Check for -Infinity
         if b == b'-' && i + 9 <= input.len()
             && &input[i + 1..i + 9] == b"Infinity"
+            && (i == 0 || !is_ident_char(input[i - 1]))
             && (i + 9 >= input.len() || !is_ident_char(input[i + 9]))
         {
             output.extend_from_slice(b"\"__NegInf_SENTINEL__\"");
@@ -186,10 +187,9 @@ fn read_json_file(py: Python<'_>, path: &str) -> PyResult<PyObject> {
 ///   "header" -> dict (parsed header.json or _journal/start.json)
 ///   "samples" -> list[dict] | None (parsed samples/*.json, or None if header_only)
 ///   "reductions" -> list[dict] | None (parsed reductions.json if present)
-///   "summaries" -> list[dict] | None (parsed summaries.json if present)
 ///   "has_header_json" -> bool (whether header.json was found)
 ///
-/// If header_only=True, only the header (and reductions/summaries) are read.
+/// If header_only=True, only the header (and reductions) are read.
 #[pyfunction]
 #[pyo3(signature = (path, header_only=false))]
 fn read_eval_file(py: Python<'_>, path: &str, header_only: bool) -> PyResult<PyObject> {
@@ -229,13 +229,9 @@ fn read_eval_file(py: Python<'_>, path: &str, header_only: bool) -> PyResult<PyO
         result.set_item("reductions", py.None())?;
     }
 
-    // Read summaries if present
-    if entry_names.iter().any(|n| n == "summaries.json") {
-        let summaries_data = read_and_parse_member(py, &mut archive, "summaries.json")?;
-        result.set_item("summaries", summaries_data)?;
-    } else {
-        result.set_item("summaries", py.None())?;
-    }
+    // Note: summaries.json is not parsed here as the Python code doesn't use it.
+    // EvalLog doesn't have a top-level summaries field; summaries are only used
+    // for the read_eval_log_sample_summaries function which we don't patch.
 
     // Read samples (unless header_only)
     if header_only {
