@@ -50,3 +50,23 @@ These weren't caught by existing tests because the test log generator doesn't pr
 - These were pre-existing bugs, not introduced by cleanup. They would manifest with real-world data containing tool calls with timing info, errors, or approval events.
 - Test data coverage was insufficient — the test generator doesn't produce events with `completed`, `error`, or approval-related fields.
 - **180 tests now pass, 0 skipped, 0 failed**
+
+## Comprehensive event construction fixes - 03/06/2026 03:55 - commit ba8c8bb
+
+### What was done
+Second review subagent identified additional correctness issues of the same class — nested Pydantic models left as raw dicts in more event types. All fixed:
+
+1. **ScoreEditEvent**: Was handling `score` field (copy-paste error from ScoreEvent), but ScoreEditEvent has `edit` (ScoreEdit). Fixed.
+2. **ErrorEvent**: `error` field (EvalError) not constructed. Fixed.
+3. **LoggerEvent**: `message` field (LoggingMessage) not constructed. Also replicated `convert_log_levels` model_validator that migrates deprecated "tools"/"sandbox" levels to "trace". This was a **data correctness bug**.
+4. **ModelEvent**: `tools` (list[ToolInfo]), `call` (ModelCall), `tool_choice` (ToolFunction) not constructed. Fixed.
+5. **ScoreEvent**: `model_usage` and `role_usage` (dict[str, ModelUsage]) not constructed. Fixed.
+6. **SubtaskEvent**: `validate_input` field_validator (non-dict input → {}) not replicated. Fixed.
+7. **SampleInitEvent**: `sample` (Sample) not constructed. Fixed.
+
+Added 7 new tests covering all these code paths.
+
+### Key findings
+- The ScoreEditEvent handler was a copy-paste bug — it was trying to construct a `score` field that doesn't exist on ScoreEditEvent
+- The LoggerEvent level migration is a data correctness issue (not just serialization) — old logs with "tools"/"sandbox" levels would retain incorrect values
+- **186 tests now pass, 0 skipped, 0 failed**

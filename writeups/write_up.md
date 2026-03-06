@@ -65,8 +65,8 @@ See `write_up_code_cleanup_and_review.md` for detailed findings.
 - **Patch refactoring**: Replaced repetitive `patch()` function with data-driven `_apply_patch()` + `_PATCHES` table
 - **Version safety**: Added inspect_ai version check (warns on mismatch) and fragility documentation to `_construct.py`
 - **Skipped test fixed**: `test_string_sample_ids` now passes (regenerated test logs to include string ID files)
-- **Correctness bugs fixed**: Event `completed` timestamps, ToolEvent/ApprovalEvent nested models
-- **180 tests pass, 0 skipped, 0 failed**
+- **Correctness bugs fixed**: Event `completed` timestamps, nested model construction for all event types (ScoreEditEvent, ErrorEvent, LoggerEvent, ModelEvent with tools/call, ScoreEvent with usage, SubtaskEvent, SampleInitEvent)
+- **186 tests pass, 0 skipped, 0 failed**
 
 ## Important Choices
 - Test logs generated via direct JSON/ZIP construction (simpler, verified loadable)
