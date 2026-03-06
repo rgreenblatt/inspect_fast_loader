@@ -1,19 +1,21 @@
-"""Monkey-patching logic to replace inspect's log reading functions with fast Rust implementations.
+"""Monkey-patching logic to replace inspect's log reading functions with fast implementations.
 
 Patches sync and async variants for:
 - read_eval_log / read_eval_log_async
 - read_eval_log_headers / read_eval_log_headers_async
-- read_eval_log_sample / read_eval_log_sample_async (new)
-- read_eval_log_sample_summaries / read_eval_log_sample_summaries_async (new)
-- read_eval_log_samples (new)
+- read_eval_log_sample / read_eval_log_sample_async
+- read_eval_log_sample_summaries / read_eval_log_sample_summaries_async
+- read_eval_log_samples
 
-The Rust layer handles JSON parsing (with NaN/Inf support) and ZIP decompression.
-For full reads, EvalSample construction bypasses Pydantic model_validate using
-fast direct construction (_construct.py) for ~5x+ overall speedup.
+The Rust layer handles ZIP decompression (returning raw bytes).
+JSON parsing uses Python's json.loads (which natively supports NaN/Inf).
+EvalSample construction bypasses Pydantic model_validate using fast direct
+construction (_construct.py) for ~5-10x overall speedup.
 """
 
 import asyncio
 import functools
+import json
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any, IO, Literal
@@ -30,12 +32,11 @@ from inspect_ai.log._log import (
 )
 
 from inspect_fast_loader._construct import construct_sample_fast
-from inspect_fast_loader._native import (
+from inspect_fast_loader._zip import (
     read_eval_file,
     read_eval_headers_batch,
-    read_eval_sample as _rust_read_eval_sample,
-    read_eval_summaries as _rust_read_eval_summaries,
-    read_json_file,
+    read_eval_sample as _read_eval_sample,
+    read_eval_summaries as _read_eval_summaries,
 )
 
 SCORER_PLACEHOLDER = "88F74D2C"
@@ -69,25 +70,19 @@ def _detect_format(path: str, format: str) -> str:
 
 
 def _build_eval_log_from_eval_file(raw: dict, path: str, header_only: bool) -> EvalLog:
-    """Build an EvalLog from the dict returned by read_eval_file (Rust .eval reader).
+    """Build an EvalLog from the parsed dict returned by read_eval_file.
 
-    For full reads, uses construct_sample_fast to bypass Pydantic model_validate
-    for EvalSample objects. Header-level objects still use model_validate (negligible
-    overhead since they're validated only once per file).
+    Uses construct_sample_fast to bypass Pydantic model_validate for samples.
     """
     header_data = raw["header"]
     has_header_json = raw["has_header_json"]
     ctx = get_deserializing_context()
 
     if has_header_json:
-        # header.json contains a full EvalLog-like structure (minus samples).
-        # We strip "samples" to prevent EvalLog.populate_scorer_name_for_samples
-        # from running on header-only data (we handle it ourselves below).
         header_data.pop("samples", None)
         log = EvalLog.model_validate(header_data, context=ctx)
         log.location = path
     else:
-        # Fallback: _journal/start.json has {version, eval, plan} only
         from inspect_ai.log._recorders.eval import LogStart
         start = LogStart.model_validate(header_data, context=ctx)
         log = EvalLog(version=start.version, eval=start.eval, plan=start.plan, location=path)
@@ -106,21 +101,13 @@ def _build_eval_log_from_eval_file(raw: dict, path: str, header_only: bool) -> E
         samples = [construct_sample_fast(s) for s in raw["samples"]]
         sort_samples(samples)
         log.samples = samples
-
-        # Replicate EvalLog.populate_scorer_name_for_samples (mode="after" validator)
-        # This replaces the "88F74D2C" scorer placeholder with the actual scorer name
         _populate_scorer_placeholder(log)
 
     return log
 
 
 def _populate_scorer_placeholder(log: EvalLog) -> None:
-    """Replace scorer placeholder key in sample scores with actual scorer name.
-
-    Replicates EvalLog.populate_scorer_name_for_samples which normally runs
-    as a model_validator(mode="after"). Since we construct samples outside of
-    EvalLog.model_validate, we apply this transformation manually.
-    """
+    """Replace scorer placeholder key in sample scores with actual scorer name."""
     if not log.samples or not log.results or not log.results.scores:
         return
     scorer_name = log.results.scores[0].name
@@ -129,24 +116,17 @@ def _populate_scorer_placeholder(log: EvalLog) -> None:
             sample.scores[scorer_name] = sample.scores.pop(SCORER_PLACEHOLDER)
 
 
-def _build_eval_log_from_json_file(raw: dict, path: str, header_only: bool) -> EvalLog:
-    """Build an EvalLog from the dict returned by read_json_file (Rust .json reader).
+def _build_eval_log_from_json_file(raw: dict, path: str) -> EvalLog:
+    """Build an EvalLog from a parsed .json file dict.
 
-    For full reads, bypasses Pydantic model_validate for EvalSample construction.
-    For header-only reads, falls back to original (since header is small).
+    Uses construct_sample_fast to bypass Pydantic model_validate for samples.
     """
     ctx = get_deserializing_context()
-
-    # Extract samples before header validation so EvalLog.populate_scorer_name_for_samples
-    # doesn't run on the raw sample dicts
     sample_dicts = raw.pop("samples", None)
-
-    # Validate the header portion with EvalLog.model_validate (negligible overhead)
     log = EvalLog.model_validate(raw, context=ctx)
     log.location = path
 
-    # Construct samples using fast bypass
-    if not header_only and sample_dicts is not None:
+    if sample_dicts is not None:
         samples = [construct_sample_fast(s) for s in sample_dicts]
         sort_samples(samples)
         log.samples = samples
@@ -166,13 +146,7 @@ def _fallback_to_original_sync(
     resolve_attachments: bool | Literal["full", "core"],
     format: Literal["eval", "json", "auto"],
 ) -> EvalLog:
-    """Call the original read_eval_log_async directly, avoiding double-dispatch.
-
-    The original sync read_eval_log calls run_coroutine(read_eval_log_async(...)),
-    but since we patched read_eval_log_async on the module, that would route through
-    our patched async version before falling back again. Instead, we call the original
-    async function directly to avoid the extra hop.
-    """
+    """Call the original read_eval_log_async directly, avoiding double-dispatch."""
     from inspect_ai._util._async import run_coroutine
     return run_coroutine(
         _originals["read_eval_log_async"](log_file, header_only, resolve_attachments, format)
@@ -185,34 +159,28 @@ def _fast_read_eval_log_impl(
     resolve_attachments: bool | Literal["full", "core"] = False,
     format: Literal["eval", "json", "auto"] = "auto",
 ) -> EvalLog:
-    """Fast implementation of read_eval_log using Rust parsing.
+    """Fast implementation of read_eval_log.
 
-    Falls back to original for IO[bytes] input, .json format, and header-only .eval.
+    For .eval: Rust ZIP decompression + json.loads + Pydantic bypass.
+    For .json: json.loads + Pydantic bypass.
+    Falls back to original for IO[bytes] input and header-only reads.
     """
-    # Fall back to original for bytes input
     if _is_bytes_input(log_file):
         return _fallback_to_original_sync(log_file, header_only, resolve_attachments, format)
 
     path = _resolve_path(log_file)
     fmt = _detect_format(path, format)
 
+    if header_only:
+        return _fallback_to_original_sync(log_file, header_only, resolve_attachments, format)
+
     if fmt == "eval":
-        if header_only:
-            # For header-only .eval reads, fall back to the original. The original
-            # uses AsyncZipReader with targeted range reads (only reads the EOCD +
-            # central directory + header.json entry). Our Rust zip crate opens the
-            # full ZIP and parses the entire central directory, which is slower for
-            # large files.
-            return _fallback_to_original_sync(log_file, header_only, resolve_attachments, format)
         raw = read_eval_file(path, header_only=False)
         log = _build_eval_log_from_eval_file(raw, path, header_only=False)
     elif fmt == "json":
-        if header_only:
-            # Header-only .json reads: fall back to original (streaming parser is efficient)
-            return _fallback_to_original_sync(log_file, header_only, resolve_attachments, format)
-        # Full .json reads: use Rust JSON parser + Pydantic bypass for samples
-        raw = read_json_file(path)
-        log = _build_eval_log_from_json_file(raw, path, header_only=False)
+        with open(path, "rb") as f:
+            raw = json.loads(f.read())
+        log = _build_eval_log_from_json_file(raw, path)
     else:
         raise ValueError(f"Unknown format: {fmt}")
 
@@ -241,23 +209,13 @@ async def _fast_read_eval_log_async_impl(
     resolve_attachments: bool | Literal["full", "core"] = False,
     format: Literal["eval", "json", "auto"] = "auto",
 ) -> EvalLog:
-    """Async fast implementation of read_eval_log.
-
-    The Rust functions do synchronous file I/O, so we run them in a thread
-    to avoid blocking the event loop.
-    """
-    # Fall back to original for bytes input
+    """Async wrapper — runs the sync implementation in a thread."""
     if _is_bytes_input(log_file):
         return await _originals["read_eval_log_async"](log_file, header_only, resolve_attachments, format)
 
-    path = _resolve_path(log_file)
-    fmt = _detect_format(path, format)
-
-    # Fall back to original for header-only reads (both formats)
     if header_only:
         return await _originals["read_eval_log_async"](log_file, header_only, resolve_attachments, format)
 
-    # Run synchronous Rust I/O in a thread (only .eval full reads)
     return await asyncio.to_thread(
         _fast_read_eval_log_impl, log_file, header_only, resolve_attachments, format
     )
@@ -267,7 +225,6 @@ def _fast_read_eval_log_headers_impl(
     log_files: list[str] | list[EvalLogInfo],
     progress: Any = None,
 ) -> list[EvalLog]:
-    """Fast implementation of read_eval_log_headers using Rust."""
     from inspect_ai._util._async import run_coroutine
     return run_coroutine(_fast_read_eval_log_headers_async_impl(log_files, progress))
 
@@ -276,18 +233,10 @@ async def _fast_read_eval_log_headers_async_impl(
     log_files: list[str] | list[Path] | list[EvalLogInfo],
     progress: Any = None,
 ) -> list[EvalLog]:
-    """Async fast implementation of read_eval_log_headers.
-
-    For .eval files, uses Rust batch header reading with rayon parallelism —
-    a single Rust call reads all headers in parallel OS threads, avoiding
-    per-file Python↔Rust boundary overhead and asyncio.to_thread overhead.
-
-    For .json files, falls back to original.
-    """
+    """Batch header reading with rayon-parallel ZIP decompression for .eval files."""
     if progress:
         progress.before_reading_logs(len(log_files))
 
-    # Partition into .eval and .json files
     eval_indices: list[int] = []
     eval_paths: list[str] = []
     json_indices: list[int] = []
@@ -305,7 +254,6 @@ async def _fast_read_eval_log_headers_async_impl(
 
     results: list[EvalLog | None] = [None] * len(log_files)
 
-    # Read all .eval headers in one Rust call (parallel via rayon)
     if eval_paths:
         batch_raws = await asyncio.to_thread(read_eval_headers_batch, eval_paths)
         for idx, raw, path in zip(eval_indices, batch_raws, eval_paths):
@@ -313,7 +261,6 @@ async def _fast_read_eval_log_headers_async_impl(
             if progress:
                 progress.after_read_log(path)
 
-    # Fall back to original for .json files
     if json_files:
         read_fn = _originals.get("read_eval_log_async") or getattr(_file_module, "read_eval_log_async")
 
@@ -348,7 +295,7 @@ def _fast_read_eval_log_sample_impl(
     format: Literal["eval", "json", "auto"] = "auto",
     exclude_fields: set[str] | None = None,
 ) -> EvalSample:
-    """Fast implementation of read_eval_log_sample using Rust for .eval files."""
+    """Fast implementation of read_eval_log_sample for .eval files."""
     if _is_bytes_input(log_file):
         return _originals["read_eval_log_sample"](
             log_file, id, epoch, uuid, resolve_attachments, format, exclude_fields
@@ -357,7 +304,6 @@ def _fast_read_eval_log_sample_impl(
     path = _resolve_path(log_file)
     fmt = _detect_format(path, format)
 
-    # Only fast-path for .eval format
     if fmt != "eval":
         return _originals["read_eval_log_sample"](
             log_file, id, epoch, uuid, resolve_attachments, format, exclude_fields
@@ -366,9 +312,8 @@ def _fast_read_eval_log_sample_impl(
     if id is None and uuid is None:
         raise ValueError("You must specify either a sample 'id' and 'epoch' or a sample 'uuid'")
 
-    # If uuid specified, read summaries to find the matching sample's id and epoch
     if id is None:
-        summaries = _rust_read_eval_summaries(path)
+        summaries = _read_eval_summaries(path)
         matched = next((s for s in summaries if s.get("uuid") == uuid), None)
         if matched is None:
             raise ValueError(f"Sample with uuid '{uuid}' not found in log.")
@@ -378,19 +323,15 @@ def _fast_read_eval_log_sample_impl(
     entry_name = _sample_filename(id, epoch)
 
     try:
-        sample_data = _rust_read_eval_sample(path, entry_name)
+        sample_data = _read_eval_sample(path, entry_name)
     except KeyError:
         raise IndexError(f"Sample id {id} for epoch {epoch} not found in log {path}")
 
-    # Handle exclude_fields — delete excluded keys from the parsed dict
     if exclude_fields:
         for field in exclude_fields:
             sample_data.pop(field, None)
 
     sample = construct_sample_fast(sample_data)
-
-    # Replicate scorer placeholder replacement for this single sample
-    # We need the scorer name from the header for this
     _populate_sample_scorer_placeholder(sample, path)
 
     if resolve_attachments:
@@ -404,10 +345,8 @@ def _populate_sample_scorer_placeholder(sample: EvalSample, path: str) -> None:
     """Replace scorer placeholder in a single sample by reading the header."""
     if not sample.scores or SCORER_PLACEHOLDER not in sample.scores:
         return
-    # Read header to get scorer name
     raw = read_eval_file(path, header_only=True)
-    header_data = raw["header"]
-    results = header_data.get("results")
+    results = raw["header"].get("results")
     if results and results.get("scores"):
         scorer_name = results["scores"][0].get("name")
         if scorer_name:
@@ -424,7 +363,6 @@ async def _fast_read_eval_log_sample_async_impl(
     exclude_fields: set[str] | None = None,
     reader: Any = None,
 ) -> EvalSample:
-    """Async fast implementation of read_eval_log_sample."""
     if _is_bytes_input(log_file) or reader is not None:
         return await _originals["read_eval_log_sample_async"](
             log_file, id, epoch, uuid, resolve_attachments, format, exclude_fields, reader
@@ -452,7 +390,6 @@ def _fast_read_eval_log_sample_summaries_impl(
     log_file: str | Path | EvalLogInfo,
     format: Literal["eval", "json", "auto"] = "auto",
 ) -> list[EvalSampleSummary]:
-    """Fast implementation of read_eval_log_sample_summaries using Rust."""
     path = _resolve_path(log_file)
     fmt = _detect_format(path, format)
 
@@ -460,7 +397,7 @@ def _fast_read_eval_log_sample_summaries_impl(
         return _originals["read_eval_log_sample_summaries"](log_file, format)
 
     ctx = get_deserializing_context()
-    summaries_data = _rust_read_eval_summaries(path)
+    summaries_data = _read_eval_summaries(path)
     return [
         EvalSampleSummary.model_validate(s, context=ctx) for s in summaries_data
     ]
@@ -470,7 +407,6 @@ async def _fast_read_eval_log_sample_summaries_async_impl(
     log_file: str | Path | EvalLogInfo,
     format: Literal["eval", "json", "auto"] = "auto",
 ) -> list[EvalSampleSummary]:
-    """Async fast implementation of read_eval_log_sample_summaries."""
     path = _resolve_path(log_file)
     fmt = _detect_format(path, format)
 
@@ -491,11 +427,6 @@ def _fast_read_eval_log_samples_impl(
     format: Literal["eval", "json", "auto"] = "auto",
     exclude_fields: set[str] | None = None,
 ) -> Generator[EvalSample, None, None]:
-    """Fast implementation of read_eval_log_samples.
-
-    For .eval files, reads individual samples using the fast single-sample
-    reader (Rust ZIP entry read + Pydantic bypass), yielding them one at a time.
-    """
     path = _resolve_path(log_file)
     fmt = _detect_format(path, format)
 
@@ -505,9 +436,7 @@ def _fast_read_eval_log_samples_impl(
         )
         return
 
-    # Read header to get sample_ids and check status
-    read_log_fn = getattr(_file_module, "read_eval_log")
-    log_header = read_log_fn(log_file, header_only=True, format=format)
+    log_header = _fallback_to_original_sync(log_file, header_only=True, resolve_attachments=False, format=format)
 
     if log_header.eval.dataset.sample_ids is None:
         raise RuntimeError(
@@ -523,12 +452,10 @@ def _fast_read_eval_log_samples_impl(
             + "Specify all_samples_required=False to read the samples that exist."
         )
 
-    # For .eval: read individual samples using our fast single-sample reader
-    read_sample_fn = getattr(_file_module, "read_eval_log_sample")
     for sample_id in log_header.eval.dataset.sample_ids:
         for epoch_id in range(1, (log_header.eval.config.epochs or 1) + 1):
             try:
-                sample = read_sample_fn(
+                sample = _fast_read_eval_log_sample_impl(
                     log_file=log_file,
                     id=sample_id,
                     epoch=epoch_id,
@@ -543,7 +470,6 @@ def _fast_read_eval_log_samples_impl(
 
 
 def _apply_patch(name: str, fast_impl: Any) -> None:
-    """Save the original function, wrap the fast implementation, and install it."""
     _originals[name] = getattr(_file_module, name)
     wrapper = functools.wraps(_originals[name])(fast_impl)
     wrapper._is_fast_loader_wrapper = True  # type: ignore[attr-defined]
@@ -551,7 +477,6 @@ def _apply_patch(name: str, fast_impl: Any) -> None:
     setattr(_file_module, name, wrapper)
 
 
-# Maps each inspect function name to its fast replacement.
 _PATCHES: list[tuple[str, Any]] = [
     ("read_eval_log", _fast_read_eval_log_impl),
     ("read_eval_log_async", _fast_read_eval_log_async_impl),
@@ -566,17 +491,7 @@ _PATCHES: list[tuple[str, Any]] = [
 
 
 def patch() -> None:
-    """Replace inspect's log reading functions with Rust-accelerated implementations.
-
-    Usage::
-
-        import inspect_fast_loader
-        inspect_fast_loader.patch()
-
-    After patching, all calls to ``inspect_ai.log._file.read_eval_log`` (and the
-    other 8 patched functions) are transparently routed through the fast Rust
-    implementation. Call ``unpatch()`` to restore the originals.
-    """
+    """Replace inspect's log reading functions with fast implementations."""
     global _patched
     if _patched:
         return
@@ -601,5 +516,4 @@ def unpatch() -> None:
 
 
 def is_patched() -> bool:
-    """Check if patches are currently applied."""
     return _patched

@@ -203,42 +203,39 @@ def test_nan_inf_values_preserved():
     assert_logs_equal(orig, fast)
 
 
-# ---- Rust native function tests ----
+# ---- NaN/Inf tests (json.loads handles these natively) ----
 
-def test_parse_json_bytes_nan_inf():
-    """Rust parse_json_bytes should handle NaN/Inf."""
-    from inspect_fast_loader._native import parse_json_bytes
-
+def test_json_loads_nan_inf():
+    """Python json.loads handles NaN/Inf natively."""
+    import json
     data = b'{"x": NaN, "y": Infinity, "z": -Infinity, "w": 42}'
-    result = parse_json_bytes(data)
-
+    result = json.loads(data)
     assert math.isnan(result["x"])
     assert result["y"] == float("inf")
     assert result["z"] == float("-inf")
     assert result["w"] == 42
 
 
-def test_parse_json_bytes_nan_in_string_not_replaced():
-    """NaN/Inf inside JSON strings should not be replaced."""
-    from inspect_fast_loader._native import parse_json_bytes
-
-    data = b'{"msg": "NaN is not a number, Infinity is large"}'
-    result = parse_json_bytes(data)
-    assert result["msg"] == "NaN is not a number, Infinity is large"
-
+# ---- Rust native function tests ----
 
 def test_read_eval_file_basic():
-    """Rust read_eval_file should return correct structure."""
+    """Rust read_eval_file should return raw bytes structure."""
     from inspect_fast_loader._native import read_eval_file
+    import json
 
     path = str(TEST_LOGS_DIR / "test_10samples.eval")
     result = read_eval_file(path)
 
     assert isinstance(result, dict)
     assert result["has_header_json"] is True
-    assert isinstance(result["header"], dict)
+    assert isinstance(result["header"], bytes)
+    header = json.loads(result["header"])
+    assert isinstance(header, dict)
     assert isinstance(result["samples"], list)
     assert len(result["samples"]) == 10
+    # Each sample is raw bytes
+    sample0 = json.loads(result["samples"][0])
+    assert isinstance(sample0, dict)
 
 
 def test_read_eval_file_header_only():
@@ -250,27 +247,6 @@ def test_read_eval_file_header_only():
 
     assert result["samples"] is None
     assert result["header"] is not None
-
-
-def test_read_json_file_basic():
-    """Rust read_json_file should return a dict with expected keys."""
-    from inspect_fast_loader._native import read_json_file
-
-    path = str(TEST_LOGS_DIR / "test_10samples.json")
-    result = read_json_file(path)
-
-    assert isinstance(result, dict)
-    assert "version" in result
-    assert "samples" in result
-    assert len(result["samples"]) == 10
-
-
-def test_read_json_file_not_found():
-    """Rust read_json_file should raise FileNotFoundError."""
-    from inspect_fast_loader._native import read_json_file
-
-    with pytest.raises(FileNotFoundError):
-        read_json_file("/nonexistent/path.json")
 
 
 def test_read_eval_file_not_found():

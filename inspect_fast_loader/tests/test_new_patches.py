@@ -11,8 +11,41 @@ from glob import glob
 
 import pytest
 
+import json
+
 import inspect_fast_loader
-from inspect_fast_loader._native import read_eval_headers_batch, read_eval_sample, read_eval_summaries
+from inspect_fast_loader._native import (
+    read_eval_headers_batch as _read_eval_headers_batch_raw,
+    read_eval_sample as _read_eval_sample_raw,
+    read_eval_summaries as _read_eval_summaries_raw,
+)
+
+
+def read_eval_headers_batch(paths):
+    raw_results = _read_eval_headers_batch_raw(paths)
+    return [
+        {
+            "header": json.loads(r["header"]),
+            "samples": None,
+            "has_header_json": r["has_header_json"],
+            "reductions": json.loads(r["reductions"]) if r["reductions"] is not None else None,
+        }
+        for r in raw_results
+    ]
+
+
+def read_eval_sample(path, entry_name):
+    return json.loads(_read_eval_sample_raw(path, entry_name))
+
+
+def read_eval_summaries(path):
+    raw = _read_eval_summaries_raw(path)
+    if isinstance(raw, bytes):
+        return json.loads(raw)
+    result = []
+    for chunk in raw:
+        result.extend(json.loads(chunk))
+    return result
 
 from helpers import deep_compare
 
@@ -43,11 +76,12 @@ class TestRustBatchHeaders:
 
     def test_batch_headers_match_single_reads(self):
         """Batch header results should match individual read_eval_file results."""
-        from inspect_fast_loader._native import read_eval_file
+        from inspect_fast_loader._native import read_eval_file as _raw
         files = get_test_files()[:10]
         batch_results = read_eval_headers_batch(files)
         for path, batch_r in zip(files, batch_results):
-            single_r = read_eval_file(path, header_only=True)
+            single_raw = _raw(path, header_only=True)
+            single_r = {"has_header_json": single_raw["has_header_json"], "header": json.loads(single_raw["header"])}
             assert batch_r["has_header_json"] == single_r["has_header_json"]
             assert not deep_compare(batch_r["header"], single_r["header"])
 

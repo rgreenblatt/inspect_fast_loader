@@ -1,226 +1,55 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyFloat, PyList};
+use pyo3::types::{PyBytes, PyDict, PyList};
 use std::io::Read;
 
 // ---------------------------------------------------------------------------
-// NaN/Inf pre-processing
+// Helper: read a ZIP member into raw bytes
 // ---------------------------------------------------------------------------
 
-/// Replace NaN, Infinity, -Infinity tokens in JSON bytes with sentinel strings,
-/// returning the modified bytes and a flag indicating whether any replacements were made.
-///
-/// The sentinels are chosen to be valid JSON strings that are extremely unlikely
-/// to appear in real data:
-///   NaN       -> "__NaN_SENTINEL__"
-///   Infinity  -> "__Inf_SENTINEL__"
-///   -Infinity -> "__NegInf_SENTINEL__"
-///
-/// We scan byte-by-byte, skipping over JSON strings (respecting escape sequences).
-fn preprocess_nan_inf(input: &[u8]) -> (Vec<u8>, bool) {
-    let mut output = Vec::with_capacity(input.len());
-    let mut i = 0;
-    let mut had_replacements = false;
-
-    while i < input.len() {
-        let b = input[i];
-
-        // Skip over JSON strings
-        if b == b'"' {
-            output.push(b);
-            i += 1;
-            while i < input.len() {
-                let c = input[i];
-                output.push(c);
-                i += 1;
-                if c == b'\\' && i < input.len() {
-                    // Push escaped character
-                    output.push(input[i]);
-                    i += 1;
-                } else if c == b'"' {
-                    break;
-                }
-            }
-            continue;
-        }
-
-        // Check for NaN (must not be preceded by alphanumeric/underscore)
-        if b == b'N' && i + 2 < input.len()
-            && input[i + 1] == b'a' && input[i + 2] == b'N'
-            && (i == 0 || !is_ident_char(input[i - 1]))
-            && (i + 3 >= input.len() || !is_ident_char(input[i + 3]))
-        {
-            output.extend_from_slice(b"\"__NaN_SENTINEL__\"");
-            i += 3;
-            had_replacements = true;
-            continue;
-        }
-
-        // Check for -Infinity
-        if b == b'-' && i + 9 <= input.len()
-            && &input[i + 1..i + 9] == b"Infinity"
-            && (i == 0 || !is_ident_char(input[i - 1]))
-            && (i + 9 >= input.len() || !is_ident_char(input[i + 9]))
-        {
-            output.extend_from_slice(b"\"__NegInf_SENTINEL__\"");
-            i += 9;
-            had_replacements = true;
-            continue;
-        }
-
-        // Check for Infinity (positive)
-        if b == b'I' && i + 8 <= input.len()
-            && &input[i..i + 8] == b"Infinity"
-            && (i == 0 || !is_ident_char(input[i - 1]))
-            && (i + 8 >= input.len() || !is_ident_char(input[i + 8]))
-        {
-            output.extend_from_slice(b"\"__Inf_SENTINEL__\"");
-            i += 8;
-            had_replacements = true;
-            continue;
-        }
-
-        output.push(b);
-        i += 1;
-    }
-
-    (output, had_replacements)
+fn read_member_bytes(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    member_name: &str,
+) -> Result<Vec<u8>, String> {
+    let mut file = archive
+        .by_name(member_name)
+        .map_err(|e| format!("ZIP member not found: {member_name}: {e}"))?;
+    let mut buf = Vec::with_capacity(file.size() as usize);
+    file.read_to_end(&mut buf)
+        .map_err(|e| format!("Failed to read {member_name}: {e}"))?;
+    Ok(buf)
 }
 
-#[inline]
-fn is_ident_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-// ---------------------------------------------------------------------------
-// JSON -> Python conversion
-// ---------------------------------------------------------------------------
-
-/// Convert a serde_json::Value to a Python object, restoring NaN/Inf sentinels.
-fn json_value_to_py(py: Python<'_>, value: &serde_json::Value, restore_nan_inf: bool) -> PyResult<PyObject> {
-    match value {
-        serde_json::Value::Null => Ok(py.None()),
-        serde_json::Value::Bool(b) => Ok(b.into_pyobject(py)?.to_owned().into_any().unbind()),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(i.into_pyobject(py)?.into_any().unbind())
-            } else if let Some(f) = n.as_f64() {
-                Ok(f.into_pyobject(py)?.into_any().unbind())
-            } else {
-                // Fallback for very large integers
-                let s = n.to_string();
-                let int_val = s.parse::<i128>().map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Cannot parse number: {e}"))
-                })?;
-                Ok(int_val.into_pyobject(py)?.into_any().unbind())
-            }
+fn open_archive(path: &str) -> PyResult<zip::ZipArchive<std::fs::File>> {
+    let file = std::fs::File::open(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(format!(
+                "File not found: {path}"
+            ))
+        } else {
+            PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to open {path}: {e}"))
         }
-        serde_json::Value::String(s) => {
-            if restore_nan_inf {
-                match s.as_str() {
-                    "__NaN_SENTINEL__" => {
-                        return Ok(PyFloat::new(py, f64::NAN).into_any().unbind());
-                    }
-                    "__Inf_SENTINEL__" => {
-                        return Ok(PyFloat::new(py, f64::INFINITY).into_any().unbind());
-                    }
-                    "__NegInf_SENTINEL__" => {
-                        return Ok(PyFloat::new(py, f64::NEG_INFINITY).into_any().unbind());
-                    }
-                    _ => {}
-                }
-            }
-            Ok(s.into_pyobject(py)?.into_any().unbind())
-        }
-        serde_json::Value::Array(arr) => {
-            let list = PyList::empty(py);
-            for item in arr {
-                list.append(json_value_to_py(py, item, restore_nan_inf)?)?;
-            }
-            Ok(list.into_any().unbind())
-        }
-        serde_json::Value::Object(obj) => {
-            let dict = PyDict::new(py);
-            for (k, v) in obj {
-                dict.set_item(k, json_value_to_py(py, v, restore_nan_inf)?)?;
-            }
-            Ok(dict.into_any().unbind())
-        }
-    }
-}
-
-/// Parse JSON bytes (with NaN/Inf support) into a Python dict/list/value.
-///
-/// Fast path: tries standard serde_json parsing first. Only falls back to
-/// NaN/Inf preprocessing if standard parsing fails (most files don't contain
-/// NaN/Inf, so this avoids the preprocessing overhead in the common case).
-fn parse_json_with_nan_inf(py: Python<'_>, data: &[u8]) -> PyResult<PyObject> {
-    // Fast path: try standard parsing first
-    match serde_json::from_slice::<serde_json::Value>(data) {
-        Ok(value) => return json_value_to_py(py, &value, false),
-        Err(standard_err) => {
-            // Standard parsing failed — try with NaN/Inf preprocessing
-            let (processed, had_replacements) = preprocess_nan_inf(data);
-            if had_replacements {
-                let value: serde_json::Value = serde_json::from_slice(&processed)
-                    .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                        format!("JSON parse error: {e}")))?;
-                json_value_to_py(py, &value, true)
-            } else {
-                // No NaN/Inf found — original error is the real error
-                Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    format!("JSON parse error: {standard_err}")))
-            }
-        }
-    }
+    })?;
+    zip::ZipArchive::new(file)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid ZIP file: {e}")))
 }
 
 // ---------------------------------------------------------------------------
 // Exported functions
 // ---------------------------------------------------------------------------
 
-/// Parse JSON bytes into a Python object (dict, list, etc).
-/// Supports NaN, Infinity, -Infinity as bare tokens.
-#[pyfunction]
-fn parse_json_bytes(py: Python<'_>, data: &[u8]) -> PyResult<PyObject> {
-    parse_json_with_nan_inf(py, data)
-}
-
-/// Read a .json format log file from disk and parse it into a Python dict.
-/// Supports NaN/Infinity/-Infinity in the JSON.
-#[pyfunction]
-fn read_json_file(py: Python<'_>, path: &str) -> PyResult<PyObject> {
-    let data = std::fs::read(path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(format!("File not found: {path}"))
-        } else {
-            PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to read {path}: {e}"))
-        }
-    })?;
-    parse_json_with_nan_inf(py, &data)
-}
-
 /// Read an .eval format log file (ZIP archive) from disk.
 ///
 /// Returns a Python dict with keys:
-///   "header" -> dict (parsed header.json or _journal/start.json)
-///   "samples" -> list[dict] | None (parsed samples/*.json, or None if header_only)
-///   "reductions" -> list[dict] | None (parsed reductions.json if present)
+///   "header"          -> bytes (raw JSON of header.json or _journal/start.json)
+///   "samples"         -> list[bytes] | None (raw JSON bytes per sample, or None if header_only)
+///   "reductions"      -> bytes | None (raw JSON of reductions.json if present)
 ///   "has_header_json" -> bool (whether header.json was found)
 ///
-/// If header_only=True, only the header (and reductions) are read.
+/// JSON parsing is left to Python (json.loads) so NaN/Inf are handled natively.
 #[pyfunction]
 #[pyo3(signature = (path, header_only=false))]
 fn read_eval_file(py: Python<'_>, path: &str, header_only: bool) -> PyResult<PyObject> {
-    let file = std::fs::File::open(path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(format!("File not found: {path}"))
-        } else {
-            PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to open {path}: {e}"))
-        }
-    })?;
-
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid ZIP file: {e}")))?;
+    let mut archive = open_archive(path)?;
 
     let result = PyDict::new(py);
 
@@ -236,78 +65,34 @@ fn read_eval_file(py: Python<'_>, path: &str, header_only: bool) -> PyResult<PyO
     } else {
         "_journal/start.json"
     };
-    let header_data = read_and_parse_member(py, &mut archive, header_name)?;
-    result.set_item("header", header_data)?;
+    let header_bytes = read_member_bytes(&mut archive, header_name)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyKeyError, _>(e))?;
+    result.set_item("header", PyBytes::new(py, &header_bytes))?;
 
     // Read reductions if present
     if entry_names.iter().any(|n| n == "reductions.json") {
-        let reductions_data = read_and_parse_member(py, &mut archive, "reductions.json")?;
-        result.set_item("reductions", reductions_data)?;
+        let reductions_bytes = read_member_bytes(&mut archive, "reductions.json")
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e))?;
+        result.set_item("reductions", PyBytes::new(py, &reductions_bytes))?;
     } else {
         result.set_item("reductions", py.None())?;
     }
-
-    // Note: summaries.json is not parsed here as the Python code doesn't use it.
-    // EvalLog doesn't have a top-level summaries field; summaries are only used
-    // for the read_eval_log_sample_summaries function which we don't patch.
 
     // Read samples (unless header_only)
     if header_only {
         result.set_item("samples", py.None())?;
     } else {
-        // Collect sample entry names first (to avoid borrow issues)
         let sample_names: Vec<String> = entry_names
             .iter()
             .filter(|n| n.starts_with("samples/") && n.ends_with(".json"))
             .cloned()
             .collect();
 
-        // Step 1: Extract raw bytes sequentially (ZIP requires sequential access)
-        let mut sample_bytes: Vec<Vec<u8>> = Vec::with_capacity(sample_names.len());
-        for name in &sample_names {
-            let mut file = archive.by_name(name).map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyKeyError, _>(
-                    format!("ZIP member not found: {name}: {e}"))
-            })?;
-            let mut buf = Vec::with_capacity(file.size() as usize);
-            file.read_to_end(&mut buf).map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyIOError, _>(
-                    format!("Failed to read {name}: {e}"))
-            })?;
-            sample_bytes.push(buf);
-        }
-
-        // Step 2: Parse JSON in parallel using rayon (release GIL during computation)
-        let parsed_values: Vec<Result<(serde_json::Value, bool), String>> =
-            py.allow_threads(|| {
-                use rayon::prelude::*;
-                sample_bytes.par_iter().map(|bytes| {
-                    // Try standard parsing first (fast path)
-                    match serde_json::from_slice::<serde_json::Value>(bytes) {
-                        Ok(value) => Ok((value, false)),
-                        Err(_) => {
-                            // Fall back to NaN/Inf preprocessing
-                            let (processed, had_replacements) = preprocess_nan_inf(bytes);
-                            if had_replacements {
-                                serde_json::from_slice::<serde_json::Value>(&processed)
-                                    .map(|v| (v, true))
-                                    .map_err(|e| format!("JSON parse error: {e}"))
-                            } else {
-                                Err(format!("JSON parse error in sample"))
-                            }
-                        }
-                    }
-                }).collect()
-            });
-
-        // Step 3: Convert serde_json::Value → Python objects (needs GIL)
         let samples_list = PyList::empty(py);
-        for parsed in parsed_values {
-            let (value, had_nan_inf) = parsed.map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>(e)
-            })?;
-            let py_obj = json_value_to_py(py, &value, had_nan_inf)?;
-            samples_list.append(py_obj)?;
+        for name in &sample_names {
+            let bytes = read_member_bytes(&mut archive, name)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e))?;
+            samples_list.append(PyBytes::new(py, &bytes))?;
         }
 
         result.set_item("samples", samples_list)?;
@@ -316,56 +101,40 @@ fn read_eval_file(py: Python<'_>, path: &str, header_only: bool) -> PyResult<PyO
     Ok(result.into_any().unbind())
 }
 
-/// Read and parse a single ZIP member as JSON with NaN/Inf support.
-fn read_and_parse_member(
-    py: Python<'_>,
-    archive: &mut zip::ZipArchive<std::fs::File>,
-    member_name: &str,
-) -> PyResult<PyObject> {
-    let mut file = archive.by_name(member_name).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyKeyError, _>(format!("ZIP member not found: {member_name}: {e}"))
-    })?;
-    let mut buf = Vec::with_capacity(file.size() as usize);
-    file.read_to_end(&mut buf)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to read {member_name}: {e}")))?;
-    parse_json_with_nan_inf(py, &buf)
-}
-
 /// Read headers from multiple .eval files in parallel using rayon.
 ///
-/// Takes a list of file paths and returns a list of dicts, each with the same
-/// structure as read_eval_file(path, header_only=True): {header, samples: None,
-/// reductions, has_header_json}.
+/// Takes a list of file paths and returns a list of dicts, each with:
+///   {header: bytes, samples: None, reductions: bytes|None, has_header_json: bool}
 ///
-/// Uses rayon for true OS-level thread parallelism, avoiding per-file
-/// Python↔Rust boundary overhead and asyncio.to_thread overhead.
+/// Uses rayon for true OS-level thread parallelism for ZIP decompression.
 #[pyfunction]
 fn read_eval_headers_batch(py: Python<'_>, paths: Vec<String>) -> PyResult<PyObject> {
-    // Step 1: Read and parse all headers in parallel (release GIL)
-    let parsed_results: Vec<Result<HeaderResult, String>> = py.allow_threads(|| {
+    // Step 1: Read all headers in parallel (release GIL)
+    let raw_results: Vec<Result<HeaderBytesResult, String>> = py.allow_threads(|| {
         use rayon::prelude::*;
-        paths.par_iter().map(|path| {
-            read_header_from_file(path)
-        }).collect()
+        paths
+            .par_iter()
+            .map(|path| read_header_bytes_from_file(path))
+            .collect()
     });
 
     // Step 2: Convert to Python objects (needs GIL)
     let result_list = PyList::empty(py);
-    for (i, parsed) in parsed_results.into_iter().enumerate() {
-        let header_result = parsed.map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                format!("Error reading {}: {e}", paths[i]))
+    for (i, raw) in raw_results.into_iter().enumerate() {
+        let hr = raw.map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                "Error reading {}: {e}",
+                paths[i]
+            ))
         })?;
 
         let dict = PyDict::new(py);
-        let header_py = json_value_to_py(py, &header_result.header, header_result.header_had_nan_inf)?;
-        dict.set_item("header", header_py)?;
+        dict.set_item("header", PyBytes::new(py, &hr.header_bytes))?;
         dict.set_item("samples", py.None())?;
-        dict.set_item("has_header_json", header_result.has_header_json)?;
+        dict.set_item("has_header_json", hr.has_header_json)?;
 
-        if let Some((reductions_val, reductions_nan_inf)) = header_result.reductions {
-            let reductions_py = json_value_to_py(py, &reductions_val, reductions_nan_inf)?;
-            dict.set_item("reductions", reductions_py)?;
+        if let Some(red_bytes) = hr.reductions_bytes {
+            dict.set_item("reductions", PyBytes::new(py, &red_bytes))?;
         } else {
             dict.set_item("reductions", py.None())?;
         }
@@ -376,139 +145,91 @@ fn read_eval_headers_batch(py: Python<'_>, paths: Vec<String>) -> PyResult<PyObj
     Ok(result_list.into_any().unbind())
 }
 
-/// Internal result type for parallel header reading.
-struct HeaderResult {
-    header: serde_json::Value,
-    header_had_nan_inf: bool,
+struct HeaderBytesResult {
+    header_bytes: Vec<u8>,
     has_header_json: bool,
-    reductions: Option<(serde_json::Value, bool)>,
+    reductions_bytes: Option<Vec<u8>>,
 }
 
-/// Read and parse header (and optionally reductions) from a single .eval file.
-/// Called from rayon threads without the GIL.
-fn read_header_from_file(path: &str) -> Result<HeaderResult, String> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| format!("Failed to open {path}: {e}"))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| format!("Invalid ZIP {path}: {e}"))?;
+fn read_header_bytes_from_file(path: &str) -> Result<HeaderBytesResult, String> {
+    let file =
+        std::fs::File::open(path).map_err(|e| format!("Failed to open {path}: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("Invalid ZIP {path}: {e}"))?;
 
     let entry_names: Vec<String> = archive.file_names().map(|s| s.to_string()).collect();
     let has_header_json = entry_names.iter().any(|n| n == "header.json");
 
-    let header_name = if has_header_json { "header.json" } else { "_journal/start.json" };
-    let (header, header_had_nan_inf) = read_and_parse_member_raw(&mut archive, header_name)?;
+    let header_name = if has_header_json {
+        "header.json"
+    } else {
+        "_journal/start.json"
+    };
+    let header_bytes = read_member_bytes(&mut archive, header_name)?;
 
-    let reductions = if entry_names.iter().any(|n| n == "reductions.json") {
-        Some(read_and_parse_member_raw(&mut archive, "reductions.json")?)
+    let reductions_bytes = if entry_names.iter().any(|n| n == "reductions.json") {
+        Some(read_member_bytes(&mut archive, "reductions.json")?)
     } else {
         None
     };
 
-    Ok(HeaderResult {
-        header,
-        header_had_nan_inf,
+    Ok(HeaderBytesResult {
+        header_bytes,
         has_header_json,
-        reductions,
+        reductions_bytes,
     })
 }
 
 /// Read a single sample from an .eval ZIP file by its entry name.
 ///
-/// Returns the parsed JSON as a Python dict. The entry_name should be
+/// Returns the raw JSON bytes. The entry_name should be
 /// e.g. "samples/1_epoch_1.json".
 #[pyfunction]
 fn read_eval_sample(py: Python<'_>, path: &str, entry_name: &str) -> PyResult<PyObject> {
-    let file = std::fs::File::open(path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(format!("File not found: {path}"))
-        } else {
-            PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to open {path}: {e}"))
-        }
-    })?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid ZIP file: {e}")))?;
-
-    read_and_parse_member(py, &mut archive, entry_name)
+    let mut archive = open_archive(path)?;
+    let bytes = read_member_bytes(&mut archive, entry_name)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyKeyError, _>(e))?;
+    Ok(PyBytes::new(py, &bytes).into_any().unbind())
 }
 
 /// Read summaries from an .eval ZIP file.
 ///
-/// Returns the parsed JSON (a list of summary dicts) from summaries.json,
-/// or falls back to reading _journal/summaries/*.json entries.
+/// Returns the raw JSON bytes of the summaries (from summaries.json,
+/// or concatenated from _journal/summaries/*.json entries).
 #[pyfunction]
 fn read_eval_summaries(py: Python<'_>, path: &str) -> PyResult<PyObject> {
-    let file = std::fs::File::open(path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(format!("File not found: {path}"))
-        } else {
-            PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to open {path}: {e}"))
-        }
-    })?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid ZIP file: {e}")))?;
+    let mut archive = open_archive(path)?;
 
     let entry_names: Vec<String> = archive.file_names().map(|s| s.to_string()).collect();
 
     if entry_names.iter().any(|n| n == "summaries.json") {
-        // Consolidated summaries file exists
-        return read_and_parse_member(py, &mut archive, "summaries.json");
+        let bytes = read_member_bytes(&mut archive, "summaries.json")
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e))?;
+        return Ok(PyBytes::new(py, &bytes).into_any().unbind());
     }
 
-    // Fall back to _journal/summaries/*.json
+    // Fall back to _journal/summaries/*.json — return list of raw byte chunks
     let mut journal_summary_names: Vec<String> = entry_names
         .iter()
         .filter(|n| n.starts_with("_journal/summaries/") && n.ends_with(".json"))
         .cloned()
         .collect();
-    // Sort by numeric index to get correct order
     journal_summary_names.sort_by_key(|n| {
-        n.split('/').last()
+        n.split('/')
+            .last()
             .and_then(|f| f.strip_suffix(".json"))
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(0)
     });
 
-    let all_summaries = PyList::empty(py);
+    let chunks = PyList::empty(py);
     for name in &journal_summary_names {
-        let batch = read_and_parse_member(py, &mut archive, name)?;
-        // Each journal summary file contains a list of summaries; extend
-        let batch_list = batch.downcast_bound::<PyList>(py).map_err(|_| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!("Expected list in {name}"))
-        })?;
-        for item in batch_list.iter() {
-            all_summaries.append(item)?;
-        }
+        let bytes = read_member_bytes(&mut archive, name)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e))?;
+        chunks.append(PyBytes::new(py, &bytes))?;
     }
 
-    Ok(all_summaries.into_any().unbind())
-}
-
-/// Read and parse a ZIP member, returning a serde_json::Value and NaN/Inf flag.
-/// For use in rayon threads (no GIL needed).
-fn read_and_parse_member_raw(
-    archive: &mut zip::ZipArchive<std::fs::File>,
-    member_name: &str,
-) -> Result<(serde_json::Value, bool), String> {
-    let mut file = archive.by_name(member_name)
-        .map_err(|e| format!("ZIP member not found: {member_name}: {e}"))?;
-    let mut buf = Vec::with_capacity(file.size() as usize);
-    file.read_to_end(&mut buf)
-        .map_err(|e| format!("Failed to read {member_name}: {e}"))?;
-
-    match serde_json::from_slice::<serde_json::Value>(&buf) {
-        Ok(value) => Ok((value, false)),
-        Err(_) => {
-            let (processed, had_replacements) = preprocess_nan_inf(&buf);
-            if had_replacements {
-                serde_json::from_slice::<serde_json::Value>(&processed)
-                    .map(|v| (v, true))
-                    .map_err(|e| format!("JSON parse error in {member_name}: {e}"))
-            } else {
-                Err(format!("JSON parse error in {member_name}"))
-            }
-        }
-    }
+    Ok(chunks.into_any().unbind())
 }
 
 /// List the entries of a ZIP file from bytes.
@@ -540,8 +261,6 @@ fn read_zip_member(data: &[u8], member_name: &str) -> PyResult<Vec<u8>> {
 /// Python module definition.
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(parse_json_bytes, m)?)?;
-    m.add_function(wrap_pyfunction!(read_json_file, m)?)?;
     m.add_function(wrap_pyfunction!(read_eval_file, m)?)?;
     m.add_function(wrap_pyfunction!(read_eval_headers_batch, m)?)?;
     m.add_function(wrap_pyfunction!(read_eval_sample, m)?)?;
@@ -549,47 +268,4 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(list_zip_entries, m)?)?;
     m.add_function(wrap_pyfunction!(read_zip_member, m)?)?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_preprocess_nan_basic() {
-        let input = br#"{"x": NaN, "y": Infinity, "z": -Infinity}"#;
-        let (output, had) = preprocess_nan_inf(input);
-        assert!(had);
-        let s = String::from_utf8(output).unwrap();
-        assert!(s.contains("\"__NaN_SENTINEL__\""));
-        assert!(s.contains("\"__Inf_SENTINEL__\""));
-        assert!(s.contains("\"__NegInf_SENTINEL__\""));
-        // Should be valid JSON now
-        let _: serde_json::Value = serde_json::from_str(&s).unwrap();
-    }
-
-    #[test]
-    fn test_preprocess_nan_in_string_untouched() {
-        let input = br#"{"msg": "the value is NaN or Infinity"}"#;
-        let (output, had) = preprocess_nan_inf(input);
-        assert!(!had);
-        assert_eq!(input.as_slice(), output.as_slice());
-    }
-
-    #[test]
-    fn test_preprocess_no_nan() {
-        let input = br#"{"x": 1, "y": "hello"}"#;
-        let (output, had) = preprocess_nan_inf(input);
-        assert!(!had);
-        assert_eq!(input.as_slice(), output.as_slice());
-    }
-
-    #[test]
-    fn test_preprocess_nan_in_array() {
-        let input = br#"[NaN, 1, Infinity, -Infinity]"#;
-        let (output, had) = preprocess_nan_inf(input);
-        assert!(had);
-        let s = String::from_utf8(output).unwrap();
-        let _: serde_json::Value = serde_json::from_str(&s).unwrap();
-    }
 }

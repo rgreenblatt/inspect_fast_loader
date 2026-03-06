@@ -9,42 +9,12 @@ def test_import():
     """Verify the Rust extension compiles and imports."""
     import inspect_fast_loader
 
-    assert hasattr(inspect_fast_loader, "parse_json_bytes")
     assert hasattr(inspect_fast_loader, "list_zip_entries")
     assert hasattr(inspect_fast_loader, "read_zip_member")
+    assert hasattr(inspect_fast_loader, "read_eval_file")
     assert hasattr(inspect_fast_loader, "patch")
     assert hasattr(inspect_fast_loader, "unpatch")
     assert hasattr(inspect_fast_loader, "is_patched")
-
-
-def test_parse_json_bytes():
-    """Verify JSON parsing works correctly."""
-    from inspect_fast_loader import parse_json_bytes
-
-    data = b'{"key": "value", "num": 42, "arr": [1, 2, 3], "nested": {"a": true, "b": null}}'
-    result = parse_json_bytes(data)
-
-    assert result["key"] == "value"
-    assert result["num"] == 42
-    assert result["arr"] == [1, 2, 3]
-    assert result["nested"]["a"] is True
-    assert result["nested"]["b"] is None
-
-
-def test_parse_json_bytes_empty_object():
-    from inspect_fast_loader import parse_json_bytes
-
-    result = parse_json_bytes(b"{}")
-    assert result == {}
-
-
-def test_parse_json_bytes_invalid():
-    from inspect_fast_loader import parse_json_bytes
-
-    import pytest
-
-    with pytest.raises(ValueError):
-        parse_json_bytes(b"not json")
 
 
 def test_list_zip_entries():
@@ -141,13 +111,11 @@ def test_patch_wrapper_attributes():
 
     patch()
     try:
-        # All patched functions should have the marker attribute
         assert getattr(file_mod.read_eval_log, "_is_fast_loader_wrapper", False)
         assert getattr(file_mod.read_eval_log_async, "_is_fast_loader_wrapper", False)
         assert getattr(file_mod.read_eval_log_headers, "_is_fast_loader_wrapper", False)
         assert getattr(file_mod.read_eval_log_headers_async, "_is_fast_loader_wrapper", False)
 
-        # Wrappers should store a reference to the original
         assert hasattr(file_mod.read_eval_log, "_original")
         assert hasattr(file_mod.read_eval_log_async, "_original")
     finally:

@@ -8,6 +8,7 @@ construction helpers (_construct_message, _construct_model_output, etc.).
 """
 
 import copy
+import json
 import os
 from pathlib import Path
 
@@ -33,11 +34,21 @@ from inspect_fast_loader._construct import (
     _construct_model_usage,
     _construct_event,
 )
-from inspect_fast_loader._native import read_eval_file
+from inspect_fast_loader._native import read_eval_file as _read_eval_file_raw
 
 from helpers import deep_compare
 
 TEST_LOGS_DIR = Path(__file__).parent.parent.parent / "test_logs"
+
+
+def read_eval_file(path: str, **kwargs) -> dict:
+    """Read eval file and json.loads all byte entries into dicts."""
+    raw = _read_eval_file_raw(path, **kwargs)
+    result = {"has_header_json": raw["has_header_json"]}
+    result["header"] = json.loads(raw["header"])
+    result["reductions"] = json.loads(raw["reductions"]) if raw["reductions"] is not None else None
+    result["samples"] = [json.loads(s) for s in raw["samples"]] if raw["samples"] is not None else None
+    return result
 
 
 @pytest.fixture(autouse=True)
@@ -773,3 +784,23 @@ def test_construct_tool_message_with_deprecated_tool_error():
     assert msg.error.message == "something went wrong"
     d = msg.model_dump()
     assert d["error"]["type"] == "unknown"
+
+
+def test_construct_tool_call_with_none_type():
+    """Test that ToolCall with type=None is migrated to 'function'.
+
+    Replicates ToolCall.migrate_type field_validator which converts None -> "function".
+    """
+    from inspect_fast_loader._construct import _construct_tool_call
+
+    # Explicit None should be migrated
+    tc = _construct_tool_call({"id": "tc1", "function": "bash", "arguments": {}, "type": None})
+    assert tc.type == "function"
+
+    # Missing type should also default to "function"
+    tc2 = _construct_tool_call({"id": "tc2", "function": "bash", "arguments": {}})
+    assert tc2.type == "function"
+
+    # Explicit value should be preserved
+    tc3 = _construct_tool_call({"id": "tc3", "function": "bash", "arguments": {}, "type": "function"})
+    assert tc3.type == "function"

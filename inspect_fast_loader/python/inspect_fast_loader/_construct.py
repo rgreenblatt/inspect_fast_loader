@@ -128,38 +128,42 @@ _EVENT_CLS: dict[str, type[BaseModel]] = {
     "subtask": SubtaskEvent,
 }
 
-# Pre-compute field info for each model class to avoid repeated lookups.
-# Maps cls -> list of (field_name, is_required, default_value_or_factory)
-_FIELD_INFO_CACHE: dict[type, list[tuple[str, bool, Any]]] = {}
+# Pre-computed per-class construction info, split for fast lookup.
+# _static_defaults: dict of {field_name: default_value} for fields with non-callable defaults
+# _factory_fields: list of (field_name, factory_fn) for fields with default_factory
+# _alias_map: dict of {alias: field_name} for aliased fields
+_CLS_CACHE: dict[type, tuple[dict[str, Any], list[tuple[str, Any]], dict[str, str]]] = {}
 
 
-def _get_field_info(cls: type) -> tuple[list[tuple[str, bool, Any]], dict[str, str]]:
-    """Get cached field info for a Pydantic model class.
+def _get_cls_info(cls: type) -> tuple[dict[str, Any], list[tuple[str, Any]], dict[str, str]]:
+    """Get cached construction info for a Pydantic model class.
 
-    Returns:
-        (field_list, alias_map) where:
-        - field_list: list of (name, is_required, default_or_factory)
-        - alias_map: maps alias -> field_name for fields with aliases
+    Returns (static_defaults, factory_fields, alias_map) where:
+    - static_defaults: {field_name: default} for non-required fields with static defaults
+    - factory_fields: [(field_name, factory)] for non-required fields with default_factory
+    - alias_map: {alias: field_name} for aliased fields
     """
-    cached = _FIELD_INFO_CACHE.get(cls)
+    cached = _CLS_CACHE.get(cls)
     if cached is not None:
         return cached
-    info = []
+
+    static_defaults: dict[str, Any] = {}
+    factory_fields: list[tuple[str, Any]] = []
     alias_map: dict[str, str] = {}
+
     for name, field in cls.model_fields.items():
-        if field.is_required():
-            info.append((name, True, None))
-        elif field.default_factory is not None:
-            info.append((name, False, field.default_factory))
-        else:
-            info.append((name, False, field.default))
-        # Track aliases so we can map input dict keys to field names
+        if not field.is_required():
+            if field.default_factory is not None:
+                factory_fields.append((name, field.default_factory))
+            else:
+                static_defaults[name] = field.default
         if field.alias and field.alias != name:
             alias_map[field.alias] = name
         if field.validation_alias and isinstance(field.validation_alias, str) and field.validation_alias != name:
             alias_map[field.validation_alias] = name
-    result = (info, alias_map)
-    _FIELD_INFO_CACHE[cls] = result
+
+    result = (static_defaults, factory_fields, alias_map)
+    _CLS_CACHE[cls] = result
     return result
 
 
@@ -173,8 +177,12 @@ def _fast_construct(cls: type, data: dict) -> Any:
 
     Fields not present in data get their defaults.
     Handles field aliases (e.g. JSON "from" -> Python "from_").
+
+    WARNING: Mutates and consumes ``data`` — the dict is used directly as the
+    object's ``__dict__`` and must not be reused by the caller. This is safe
+    because each dict from the Rust JSON parser is used exactly once.
     """
-    field_info, alias_map = _get_field_info(cls)
+    static_defaults, factory_fields, alias_map = _get_cls_info(cls)
 
     # Remap aliased keys in data
     if alias_map:
@@ -182,19 +190,19 @@ def _fast_construct(cls: type, data: dict) -> Any:
             if alias in data and field_name not in data:
                 data[field_name] = data.pop(alias)
 
-    obj_dict = {}
-    for name, is_required, default_or_factory in field_info:
-        if name in data:
-            obj_dict[name] = data[name]
-        elif not is_required:
-            if callable(default_or_factory):
-                obj_dict[name] = default_or_factory()
-            else:
-                obj_dict[name] = default_or_factory
+    # Fill missing static defaults in one pass
+    for name, default in static_defaults.items():
+        if name not in data:
+            data[name] = default
+
+    # Fill missing factory defaults
+    for name, factory in factory_fields:
+        if name not in data:
+            data[name] = factory()
 
     obj = cls.__new__(cls)
-    object.__setattr__(obj, "__dict__", obj_dict)
-    object.__setattr__(obj, "__pydantic_fields_set__", set(data.keys()))
+    object.__setattr__(obj, "__dict__", data)
+    object.__setattr__(obj, "__pydantic_fields_set__", set())
     object.__setattr__(obj, "__pydantic_extra__", None)
     object.__setattr__(obj, "__pydantic_private__", None)
     return obj
@@ -295,15 +303,20 @@ def _construct_json_change(data: dict) -> JsonChange:
 
 
 def _construct_tool_call(data: dict) -> ToolCall:
-    """Construct a ToolCall (pydantic_dataclass) from a dict."""
-    return ToolCall(
-        id=data.get("id", ""),
-        function=data.get("function", ""),
-        arguments=data.get("arguments", {}),
-        parse_error=data.get("parse_error"),
-        view=data.get("view"),
-        type=data.get("type", "function"),
-    )
+    """Construct a ToolCall (pydantic_dataclass) bypassing Pydantic validation.
+
+    ToolCall is a @pydantic_dataclass, so its __init__ runs validation.
+    Direct attribute assignment is ~5x faster.
+    """
+    tc = object.__new__(ToolCall)
+    tc.id = data.get("id", "")
+    tc.function = data.get("function", "")
+    tc.arguments = data.get("arguments", {})
+    tc.parse_error = data.get("parse_error")
+    tc.view = data.get("view")
+    # Replicate ToolCall.migrate_type (field_validator): None → "function"
+    tc.type = data.get("type") or "function"
+    return tc
 
 
 def _construct_tool_call_error(data: dict) -> ToolCallError:
@@ -494,9 +507,14 @@ def construct_sample_fast(data: dict) -> EvalSample:
     - migrate_values (sandbox list -> spec)
     - ModelOutput.set_completion (auto-populate completion from choices)
     - ChatCompletionChoice.migrate_stop_reason ("length" -> "max_tokens")
+    - ToolCall.migrate_type (None -> "function")
 
     Constructs all nested Pydantic model instances using _fast_construct
     which skips validators and model_post_init.
+
+    WARNING: Mutates and consumes ``data`` — the dict (and all nested dicts)
+    become the ``__dict__`` of the constructed Pydantic objects. Callers must
+    not reuse the dict after calling this function.
     """
     # === Apply EvalSample.migrate_deprecated ===
 

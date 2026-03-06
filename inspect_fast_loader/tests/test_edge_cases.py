@@ -23,11 +23,36 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import inspect_fast_loader
 from inspect_fast_loader._native import (
-    read_eval_file,
+    read_eval_file as _read_eval_file_raw,
     read_eval_headers_batch,
-    read_eval_sample,
-    read_eval_summaries,
+    read_eval_sample as _read_eval_sample_raw,
+    read_eval_summaries as _read_eval_summaries_raw,
 )
+
+
+def read_eval_file(path, **kwargs):
+    """Wrapper that json.loads the raw bytes returned by Rust."""
+    raw = _read_eval_file_raw(path, **kwargs)
+    result = {"has_header_json": raw["has_header_json"]}
+    result["header"] = json.loads(raw["header"])
+    result["reductions"] = json.loads(raw["reductions"]) if raw["reductions"] is not None else None
+    result["samples"] = [json.loads(s) for s in raw["samples"]] if raw["samples"] is not None else None
+    return result
+
+
+def read_eval_sample(path, entry_name):
+    return json.loads(_read_eval_sample_raw(path, entry_name))
+
+
+def read_eval_summaries(path):
+    raw = _read_eval_summaries_raw(path)
+    if isinstance(raw, bytes):
+        return json.loads(raw)
+    # Journal fallback returns list of byte chunks
+    result = []
+    for chunk in raw:
+        result.extend(json.loads(chunk))
+    return result
 
 TEST_LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "test_logs")
 
