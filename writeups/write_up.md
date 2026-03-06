@@ -27,7 +27,7 @@ See `write_up_core_rust_implementation.md` for detailed findings and plots.
 - Rust `.eval` reader: ZIP decompression + JSON parsing → Python dicts
 - Rust `.json` reader: available but falls back to original (pydantic_core.from_json is faster)
 - Monkey-patching: replaces 4 functions; Rust used for .eval full reads and batch headers
-- 70 tests total (42 correctness + 28 existing), all passing
+- 79 tests total (51 correctness + 28 existing), all passing
 
 ## Important Choices
 - Test logs generated via direct JSON/ZIP construction (simpler, verified loadable)

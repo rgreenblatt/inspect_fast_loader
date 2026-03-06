@@ -79,7 +79,7 @@ Single-file header-only .eval reads are slower with Rust (zip crate parses full 
 Some callers pass bytes streams instead of file paths. Since our Rust functions expect file paths, we fall back to the original implementation for these cases.
 
 ## Testing
-- 70 tests total (42 correctness + 28 existing)
+- 79 tests total (51 correctness + 28 existing)
 - All pass
 - Correctness tests compare every field recursively with NaN-aware comparison
 
