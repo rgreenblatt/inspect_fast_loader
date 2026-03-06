@@ -33,7 +33,7 @@
 - test_logs/ and target/ are gitignored since they're generated artifacts
 - All generated logs verified loadable by inspect's Python API
 
-## Merge improvements 03/05/2026 22:26 - commit pending
+## Merge improvements 03/05/2026 22:26 - commit f70df67
 
 ### What was done
 - Extended monkey-patching to cover all 4 functions (sync + async): `read_eval_log`, `read_eval_log_async`, `read_eval_log_headers`, `read_eval_log_headers_async`
