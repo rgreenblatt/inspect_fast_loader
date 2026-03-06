@@ -392,6 +392,12 @@ def _construct_event(data: dict) -> Any:
         if "output" in data and isinstance(data["output"], dict):
             data["output"] = _construct_model_output(data["output"])
         if "config" in data and isinstance(data["config"], dict):
+            # Replicate GenerateConfig.migrate_reasoning (model_validator mode="before")
+            rh = data["config"].get("reasoning_history")
+            if rh is True:
+                data["config"]["reasoning_history"] = "all"
+            elif rh is False:
+                data["config"]["reasoning_history"] = "none"
             data["config"] = _fast_construct(GenerateConfig, data["config"])
         if "tools" in data and isinstance(data["tools"], list):
             data["tools"] = [
