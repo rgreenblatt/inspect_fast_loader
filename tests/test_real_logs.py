@@ -1,30 +1,18 @@
-"""Test inspect_fast_loader against real inspect evaluation logs using a real model."""
+"""Test inspect_fast_loader against real inspect evaluation logs using a real model.
+
+Requires ~/.anthropic_api_key. Run directly: python tests/test_real_logs.py
+"""
 
 import os
 import sys
 import time
 import tempfile
-
-ANTHROPIC_API_KEY = open(os.path.expanduser("~/.anthropic_api_key")).read().strip()
-os.environ["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
-
-LOG_DIR = os.path.join(tempfile.mkdtemp(), "real_logs")
-os.environ["INSPECT_LOG_DIR"] = LOG_DIR
-os.makedirs(LOG_DIR, exist_ok=True)
-
-from inspect_ai import Task, eval
-from inspect_ai.dataset import example_dataset, Sample, MemoryDataset
-from inspect_ai.scorer import match, includes
-from inspect_ai.solver import generate, system_message, chain_of_thought
-from inspect_ai.log import read_eval_log, EvalLog
-from inspect_ai.log._file import read_eval_log_headers
-import inspect_fast_loader
+from pathlib import Path
 
 MODEL = "anthropic/claude-haiku-4-5-20251001"
 
 
-def compare_logs(original: EvalLog, fast: EvalLog, label: str) -> bool:
-    """Deep compare two EvalLog objects for equivalence."""
+def compare_logs(original, fast, label: str) -> bool:
     errors = []
 
     if original.status != fast.status:
@@ -34,14 +22,12 @@ def compare_logs(original: EvalLog, fast: EvalLog, label: str) -> bool:
     if original.eval.model != fast.eval.model:
         errors.append(f"model: {original.eval.model} vs {fast.eval.model}")
 
-    # Compare results
     if original.results and fast.results:
         if original.results.scores != fast.results.scores:
             errors.append("scores differ")
     elif (original.results is None) != (fast.results is None):
         errors.append("results: one is None")
 
-    # Compare samples
     orig_samples = original.samples or []
     fast_samples = fast.samples or []
     if len(orig_samples) != len(fast_samples):
@@ -77,19 +63,17 @@ def compare_logs(original: EvalLog, fast: EvalLog, label: str) -> bool:
         return True
 
 
-def run_eval_and_test(task: Task, task_name: str, limit: int | None = None) -> tuple[bool, str]:
-    """Run an eval, then compare standard vs fast log reading."""
+def run_eval_and_test(task, task_name: str, *, eval_fn, read_eval_log, inspect_fast_loader, log_dir, limit: int | None = None) -> tuple[bool, str]:
     print(f"\n{'='*60}")
     print(f"Running eval: {task_name} (model={MODEL}, limit={limit})")
     print(f"{'='*60}")
 
-    results = eval(task, model=MODEL, log_dir=LOG_DIR, limit=limit)
+    results = eval_fn(task, model=MODEL, log_dir=log_dir, limit=limit)
     log_file = results[0].location
     assert log_file is not None
     print(f"  Log file: {os.path.basename(log_file)}")
     print(f"  Status: {results[0].status}")
-    n_samples = len(results[0].samples or [])
-    print(f"  Samples: {n_samples}")
+    print(f"  Samples: {len(results[0].samples or [])}")
 
     # Read with standard loader
     print("\n  Reading with standard loader...")
@@ -117,51 +101,54 @@ def run_eval_and_test(task: Task, task_name: str, limit: int | None = None) -> t
 
 
 def main():
-    print(f"Log directory: {LOG_DIR}")
+    api_key_path = Path("~/.anthropic_api_key").expanduser()
+    if not api_key_path.exists():
+        print(f"ERROR: {api_key_path} not found")
+        return 1
+
+    os.environ["ANTHROPIC_API_KEY"] = api_key_path.read_text().strip()
+
+    log_dir = os.path.join(tempfile.mkdtemp(), "real_logs")
+    os.environ["INSPECT_LOG_DIR"] = log_dir
+    os.makedirs(log_dir, exist_ok=True)
+
+    from inspect_ai import Task, eval as eval_fn
+    from inspect_ai.dataset import example_dataset, Sample, MemoryDataset
+    from inspect_ai.scorer import match, includes
+    from inspect_ai.solver import generate, system_message, chain_of_thought
+    from inspect_ai.log import read_eval_log
+    from inspect_ai.log._file import read_eval_log_headers
+    import inspect_fast_loader
+
+    shared = dict(eval_fn=eval_fn, read_eval_log=read_eval_log, inspect_fast_loader=inspect_fast_loader, log_dir=log_dir)
+
+    print(f"Log directory: {log_dir}")
     print(f"Model: {MODEL}")
     print(f"inspect_ai version: {__import__('inspect_ai').__version__}")
 
     all_ok = True
     log_files = []
 
-    # --- Test 1: Theory of mind with match scorer (5 samples) ---
-    task1 = Task(
-        dataset=example_dataset("theory_of_mind"),
-        solver=[generate()],
-        scorer=match(),
-    )
-    ok, lf = run_eval_and_test(task1, "theory_of_mind/match", limit=5)
+    # Test 1: Theory of mind with match scorer
+    task1 = Task(dataset=example_dataset("theory_of_mind"), solver=[generate()], scorer=match())
+    ok, lf = run_eval_and_test(task1, "theory_of_mind/match", limit=5, **shared)
     all_ok &= ok
     log_files.append(lf)
 
-    # --- Test 2: Theory of mind with chain_of_thought (3 samples) ---
+    # Test 2: Theory of mind with chain_of_thought
     task2 = Task(
         dataset=example_dataset("theory_of_mind"),
-        solver=[
-            system_message("You are a helpful assistant. Think step by step."),
-            chain_of_thought(),
-            generate(),
-        ],
+        solver=[system_message("You are a helpful assistant. Think step by step."), chain_of_thought(), generate()],
         scorer=match(),
     )
-    ok, lf = run_eval_and_test(task2, "theory_of_mind/cot", limit=3)
+    ok, lf = run_eval_and_test(task2, "theory_of_mind/cot", limit=3, **shared)
     all_ok &= ok
     log_files.append(lf)
 
-    # --- Test 3: Custom dataset with metadata (5 samples) ---
+    # Test 3: Custom dataset with metadata and multi-message inputs
     custom_samples = [
-        Sample(
-            input="What is 2+2?",
-            target="4",
-            id="math_0",
-            metadata={"difficulty": "easy", "topic": "arithmetic"},
-        ),
-        Sample(
-            input="What is the capital of France?",
-            target="Paris",
-            id="geo_1",
-            metadata={"difficulty": "easy", "topic": "geography"},
-        ),
+        Sample(input="What is 2+2?", target="4", id="math_0", metadata={"difficulty": "easy", "topic": "arithmetic"}),
+        Sample(input="What is the capital of France?", target="Paris", id="geo_1", metadata={"difficulty": "easy", "topic": "geography"}),
         Sample(
             input=[
                 {"role": "system", "content": "You are a math tutor. Answer with just the number."},
@@ -171,39 +158,21 @@ def main():
             id="math_2",
             metadata={"difficulty": "medium", "topic": "arithmetic"},
         ),
-        Sample(
-            input="Name a primary color.",
-            target=["red", "blue", "yellow"],
-            id="misc_3",
-        ),
-        Sample(
-            input="What programming language uses .py files?",
-            target="Python",
-            id="cs_4",
-            metadata={"topic": "cs"},
-        ),
+        Sample(input="Name a primary color.", target=["red", "blue", "yellow"], id="misc_3"),
+        Sample(input="What programming language uses .py files?", target="Python", id="cs_4", metadata={"topic": "cs"}),
     ]
-    task3 = Task(
-        dataset=MemoryDataset(custom_samples, name="custom_mixed"),
-        solver=[generate()],
-        scorer=includes(),
-    )
-    ok, lf = run_eval_and_test(task3, "custom_mixed/includes")
+    task3 = Task(dataset=MemoryDataset(custom_samples, name="custom_mixed"), solver=[generate()], scorer=includes())
+    ok, lf = run_eval_and_test(task3, "custom_mixed/includes", **shared)
     all_ok &= ok
     log_files.append(lf)
 
-    # --- Test 4: Multiple epochs (2 samples, 2 epochs) ---
-    task4 = Task(
-        dataset=example_dataset("theory_of_mind"),
-        solver=[generate()],
-        scorer=match(),
-        epochs=2,
-    )
-    ok, lf = run_eval_and_test(task4, "theory_of_mind/2_epochs", limit=2)
+    # Test 4: Multiple epochs
+    task4 = Task(dataset=example_dataset("theory_of_mind"), solver=[generate()], scorer=match(), epochs=2)
+    ok, lf = run_eval_and_test(task4, "theory_of_mind/2_epochs", limit=2, **shared)
     all_ok &= ok
     log_files.append(lf)
 
-    # --- Test 5: Batch header reading ---
+    # Test 5: Batch header reading
     print(f"\n{'='*60}")
     print(f"Testing batch header reading ({len(log_files)} files)")
     print(f"{'='*60}")
@@ -227,10 +196,10 @@ def main():
             print(f"  FAIL: header[{i}] mismatch")
             header_ok = False
     if header_ok:
-        print(f"  PASS: all headers match")
+        print("  PASS: all headers match")
     all_ok &= header_ok
 
-    # --- Test 6: header_only reads ---
+    # Test 6: header_only reads
     print(f"\n{'='*60}")
     print("Testing header_only reads")
     print(f"{'='*60}")
@@ -246,7 +215,6 @@ def main():
         else:
             print(f"  PASS: {os.path.basename(lf)}")
 
-    # --- Summary ---
     print(f"\n{'='*60}")
     if all_ok:
         print("ALL TESTS PASSED")
