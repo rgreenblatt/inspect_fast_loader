@@ -52,3 +52,34 @@
 ### Notes
 - For very large logs (5000+), Python construction loop dominates. To improve further would need to move construction to Rust, which is a much larger undertaking.
 - All documentation updated: write_up_optimization_features_polish.md, write_up.md, continuation_context.md
+
+## Benchmark correction and merge finalization 03/06/2026 03:01 - commit b716e8a
+
+### What was done
+1. **Corrected .json baseline**: Re-ran .json 1000 benchmark in fresh subprocess. Original baseline was 1095ms (not the inflated 1461ms from initial in-process benchmark). The .json 1000 speedup is 2.83x (not 5.54x).
+2. **Fresh-process benchmark script**: Created `benchmark_fresh_process.py` that runs each benchmark in isolated subprocesses to avoid in-process caching artifacts. This provides more reliable numbers than the in-process benchmark.
+3. **5000-sample correctness tests**: Added dedicated tests for 5000-sample log: full read, single sample (id=2500), and summaries count verification. 176 total tests now.
+4. **Batch header scaling investigation**: The 60-file batch header drop (2.8x) is caused by one 5000-sample file whose header.json takes ~31ms to read (all 5000 sample_ids in header). The 59 normal files take only 12ms. Not a scaling issue — just large-header overhead.
+5. **Updated all plots**: Generated fresh-process benchmark plots (`plots/fresh_process_speedup.png`, `plots/fresh_process_absolute_times.png`).
+
+### Details and examples
+- Fresh-process benchmark script: `benchmark_fresh_process.py`
+- Results: `results/benchmark_fresh_process_20260306_105752.jsonl`
+- Fresh-process plots: `plots/fresh_process_speedup.png`, `plots/fresh_process_absolute_times.png`
+- New tests in `test_edge_cases.py`: `test_5000_samples_full_read`, `test_5000_samples_single_read`, `test_5000_samples_summaries`
+
+### Key findings (corrected fresh-process numbers)
+| Operation | Original | Fast | Speedup |
+|---|---|---|---|
+| .eval full read (1000) | 2059ms | 376ms | **5.48x** |
+| .json full read (1000) | 1095ms | 388ms | **2.83x** |
+| batch headers (50 files) | 93ms | 9ms | **10.36x** |
+| single sample | 5.2ms | 0.4ms | **13.0x** |
+| summaries | 3.4ms | 0.5ms | **6.80x** |
+
+![Fresh Process Speedup](../plots/fresh_process_speedup.png)
+
+### Notes
+- In-process benchmarks unreliable for .json reads: Python allocator caching and OS page cache effects inflate the "original" baseline after prior reads in the same process
+- The .json speedup (2.83x) is consistent with what other parallel implementation branches measured (~2.6-3.2x)
+- 176 tests pass (1 skipped)

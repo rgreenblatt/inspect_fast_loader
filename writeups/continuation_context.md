@@ -4,7 +4,8 @@
 - `generate_test_logs.py` — Generates deterministic test log files in .eval and .json formats (70 files total). Run with `python generate_test_logs.py --output-dir test_logs`.
 - `benchmark_baseline.py` — Benchmarks original Python log reading performance.
 - `benchmark_comparison.py` — Benchmarks original vs Rust-accelerated side by side.
-- `benchmark_comprehensive.py` — Comprehensive benchmark of ALL operations (full reads, headers, single sample, summaries, streaming). Generates JSONL results.
+- `benchmark_comprehensive.py` — In-process benchmark of ALL operations. Can be unreliable for some measurements due to caching artifacts.
+- `benchmark_fresh_process.py` — **Primary benchmark**: runs each measurement in isolated subprocesses for reliable numbers. Use this for final reported speedups.
 - `profile_headers.py` — Profiling script for batch header performance breakdown.
 - `plot_benchmark.py` — Generates benchmark comparison plots (from prior phase).
 - `plot_benchmark_bypass.py` — Generates bypass-phase benchmark plots.
@@ -35,9 +36,11 @@ Note: `RUSTUP_HOME` must be set explicitly for maturin to find rustc.
 - **Batch header bottleneck**: Per-file asyncio.to_thread overhead (~24ms for 59 files), not ZIP reading (~12ms). Solution: single rayon-parallel Rust call.
 - **EvalSampleSummary has a model_validator (thin_data)**: Can't bypass with _fast_construct because thin_data is needed for correct behavior.
 - **Scorer placeholder in single-sample reads**: Need to read header to get scorer name. Adds ~0.2ms but necessary for correctness.
+- **In-process benchmarks can be unreliable**: Python allocator caching and OS page cache effects inflate the "original" baseline when running multiple benchmarks in the same process. Use `benchmark_fresh_process.py` (isolated subprocesses) for reliable numbers.
+- **Batch header scaling drops with large-header files**: A 5000-sample log's header.json takes ~31ms to read (contains all sample_ids). This dominates batch reads including that file. Not a file-count scaling issue.
 
 ## Current State
-Phase `optimization_features_polish` is complete. All 6 tasks from INSTRUCTIONS.md completed. 173 tests pass (56 new). 9 functions patched total.
+Phase `optimization_features_polish` is complete. All 6 tasks from INSTRUCTIONS.md completed. 176 tests pass (59 new). 9 functions patched total.
 
 ## Phase-specific write-ups
 - `writeups/write_up_optimization_features_polish.md` — This phase: batch header optimization, new patches, benchmarks

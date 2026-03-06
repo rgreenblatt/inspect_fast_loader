@@ -307,6 +307,34 @@ class TestLargeLogs:
         headers = read_eval_headers_batch(files)
         assert len(headers) == len(files)
 
+    def test_5000_samples_full_read(self):
+        """5000 sample log loads without memory issues."""
+        from inspect_ai.log._file import read_eval_log
+        path = os.path.join(TEST_LOG_DIR, "test_5000samples.eval")
+        if not os.path.exists(path):
+            pytest.skip("5000-sample test file not generated")
+        log = read_eval_log(path)
+        assert log.samples is not None
+        assert len(log.samples) == 5000
+
+    def test_5000_samples_single_read(self):
+        """Single sample read from 5000-sample log works."""
+        from inspect_ai.log._file import read_eval_log_sample
+        path = os.path.join(TEST_LOG_DIR, "test_5000samples.eval")
+        if not os.path.exists(path):
+            pytest.skip("5000-sample test file not generated")
+        sample = read_eval_log_sample(path, id=2500, epoch=1)
+        assert sample.id == 2500
+
+    def test_5000_samples_summaries(self):
+        """Summaries from 5000-sample log loads correctly."""
+        from inspect_ai.log._file import read_eval_log_sample_summaries
+        path = os.path.join(TEST_LOG_DIR, "test_5000samples.eval")
+        if not os.path.exists(path):
+            pytest.skip("5000-sample test file not generated")
+        summaries = read_eval_log_sample_summaries(path)
+        assert len(summaries) == 5000
+
 
 class TestDeprecatedFieldHandling:
     """Test that deprecated fields from older inspect versions work correctly."""
