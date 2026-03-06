@@ -149,11 +149,29 @@ fn json_value_to_py(py: Python<'_>, value: &serde_json::Value, restore_nan_inf: 
 }
 
 /// Parse JSON bytes (with NaN/Inf support) into a Python dict/list/value.
+///
+/// Fast path: tries standard serde_json parsing first. Only falls back to
+/// NaN/Inf preprocessing if standard parsing fails (most files don't contain
+/// NaN/Inf, so this avoids the preprocessing overhead in the common case).
 fn parse_json_with_nan_inf(py: Python<'_>, data: &[u8]) -> PyResult<PyObject> {
-    let (processed, had_nan_inf) = preprocess_nan_inf(data);
-    let value: serde_json::Value = serde_json::from_slice(&processed)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("JSON parse error: {e}")))?;
-    json_value_to_py(py, &value, had_nan_inf)
+    // Fast path: try standard parsing first
+    match serde_json::from_slice::<serde_json::Value>(data) {
+        Ok(value) => return json_value_to_py(py, &value, false),
+        Err(standard_err) => {
+            // Standard parsing failed — try with NaN/Inf preprocessing
+            let (processed, had_replacements) = preprocess_nan_inf(data);
+            if had_replacements {
+                let value: serde_json::Value = serde_json::from_slice(&processed)
+                    .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        format!("JSON parse error: {e}")))?;
+                json_value_to_py(py, &value, true)
+            } else {
+                // No NaN/Inf found — original error is the real error
+                Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    format!("JSON parse error: {standard_err}")))
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,19 @@
 # Progress Log: core_rust_implementation
 
-## Code quality fixes and header-only fallback 03/05/2026 23:17 - commit pending
+## Branch merge: fast-path optimization and additional tests 03/05/2026 23:48 - commit pending
+
+### What was done
+- Incorporated NaN/Inf fast-path optimization from Branch 1: try standard serde_json parse first, only fall back to preprocessing if it fails. Avoids preprocessing overhead for the common case (files without NaN/Inf).
+- Added 5 additional test cases from Branch 2: location field verification, IO[bytes] fallback for both formats, auto-detection test
+- Fixed critical import bug (inspect_ai._util.concurrency → inspect_ai._util._async) found during review
+- Added 4 module-attribute tests to exercise sync fallback paths that weren't being tested
+- Total: 79 tests, all passing
+
+### Key findings
+- Fast-path optimization doesn't change overall benchmark numbers significantly (Pydantic is the bottleneck, not JSON parsing), but avoids unnecessary work in the common case
+- Final benchmark profile: .eval full reads ~2x, batch headers ~3.2x, no regressions elsewhere
+
+## Code quality fixes and header-only fallback 03/05/2026 23:17 - commit bce53ac
 
 ### What was done
 - Code quality review found several issues; all fixed

@@ -470,3 +470,58 @@ def test_patched_batch_headers_via_module():
             assert h.samples is None
     finally:
         unpatch()
+
+
+# ---- Additional edge case tests (from Branch 2) ----
+
+def test_location_set_correctly_eval():
+    """Test that log.location is set correctly for .eval files."""
+    path = str(TEST_LOGS_DIR / "test_10samples.eval")
+    orig = _read_original(path)
+    fast = _read_fast(path)
+    assert fast.location == path
+    assert orig.location == fast.location
+
+
+def test_location_set_correctly_json():
+    """Test that log.location is set correctly for .json files."""
+    path = str(TEST_LOGS_DIR / "test_10samples.json")
+    orig = _read_original(path)
+    fast = _read_fast(path)
+    assert fast.location == path
+    assert orig.location == fast.location
+
+
+def test_bytes_input_fallback_json():
+    """Test that IO[bytes] input falls back to original for .json."""
+    patch()
+    try:
+        with open(TEST_LOGS_DIR / "test_10samples.json", "rb") as f:
+            log = read_eval_log(f)
+            assert log.status == "success"
+            assert log.samples is not None
+            assert len(log.samples) == 10
+    finally:
+        unpatch()
+
+
+def test_bytes_input_fallback_eval():
+    """Test that IO[bytes] input falls back to original for .eval."""
+    patch()
+    try:
+        with open(TEST_LOGS_DIR / "test_10samples.eval", "rb") as f:
+            log = read_eval_log(f)
+            assert log.status == "success"
+            assert log.samples is not None
+            assert len(log.samples) == 10
+    finally:
+        unpatch()
+
+
+def test_format_auto_detection():
+    """Test auto-detection works for both formats."""
+    for ext in [".eval", ".json"]:
+        fast = _read_fast(str(TEST_LOGS_DIR / f"test_10samples{ext}"))
+        assert fast.status == "success"
+        assert fast.samples is not None
+        assert len(fast.samples) == 10
