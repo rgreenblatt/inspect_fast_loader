@@ -29,7 +29,7 @@ Note: `RUSTUP_HOME` must be set explicitly for maturin to find rustc.
 - Event timestamps are `UtcDatetime` (AwareDatetime) — serializer expects datetime objects, not strings.
 
 ## Current State
-Phase `pydantic_bypass_optimization` is complete. .eval full reads achieve 7.25x speedup for 1000 samples, exceeding the 5x+ target. .json full reads achieve 2.64x speedup. All 103 tests pass.
+Phase `pydantic_bypass_optimization` is complete. .eval full reads achieve 7.25x speedup for 1000 samples, exceeding the 5x+ target. .json full reads achieve 2.64x speedup. All 117 tests pass (79 prior + 38 bypass-specific).
 
 ## Phase-specific write-ups
 - `writeups/write_up_pydantic_bypass_optimization.md` — Bypass optimization write-up with benchmark results and plots

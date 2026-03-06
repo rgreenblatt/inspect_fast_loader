@@ -72,13 +72,16 @@ Activated Rust `read_json_file` for full .json reads with Pydantic bypass for sa
 ### 4. Scorer Placeholder Replacement
 `EvalLog.populate_scorer_name_for_samples` (mode="after" validator) replaces `"88F74D2C"` with actual scorer name. Since samples are constructed outside EvalLog.model_validate, this is applied manually after all samples are built.
 
-### 5. Comprehensive Tests (24 new, 103 total)
+### 5. Comprehensive Tests (38 bypass-specific, 117 total)
 - Per-sample `model_dump()` comparison for 7 test files across .eval format
 - Full pipeline (end-to-end) comparison for both .eval and .json formats
 - Nested type verification (correct Pydantic model types)
 - NaN/Inf handling, scorer placeholder replacement
 - Edge cases: empty/cancelled logs
 - Attribute access verification on bypassed models
+- Isolated unit tests for each construction helper (_construct_message, _construct_model_output, _construct_score, _construct_model_usage, _construct_event)
+- Content list handling, tool call construction, ModelOutput completion auto-population
+- model_dump roundtrip verification, comprehensive field type checking
 
 ## Important Choices
 
@@ -101,9 +104,10 @@ Chose to construct all nested types for correctness, adding ~200ms but ensuring 
 Initially used lazy imports for 19 event types (import per call), which was very slow (189ms for 4000 events). Moved to module-level imports: 32ms.
 
 ## Testing
-- 103 tests total (79 from prior phases + 24 new bypass tests)
+- 117 tests total (79 from prior phases + 38 bypass-specific tests)
 - All pass
 - model_dump() output matches between bypass and model_validate for every sample in every test file
+- Isolated unit tests verify each construction helper independently
 
 ## Status
 Phase complete. 7.25x speedup achieved for .eval 1000-sample reads, exceeding the 5x+ target.

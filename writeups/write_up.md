@@ -36,7 +36,7 @@ See `write_up_pydantic_bypass_optimization.md` for detailed findings and plots.
 - Rayon parallel JSON parsing in Rust (GIL released during computation)
 - .json format now uses bypass instead of falling back to original (2.64x speedup)
 - Scorer placeholder replacement applied manually post-construction
-- 103 tests total, all passing
+- 117 tests total (38 bypass-specific), all passing
 
 ### How the Bypass Works
 `_fast_construct()` creates Pydantic model instances by directly setting `__dict__`, skipping all validators, type coercion, and `model_post_init`. All nested types are recursively constructed as proper Pydantic model instances. Migrations from `model_validate` are replicated in Python.

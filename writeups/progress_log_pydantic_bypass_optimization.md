@@ -12,7 +12,7 @@
 - Added rayon parallel JSON parsing in Rust
 - Activated .json format bypass (was previously 1.0x fallback, now 2.6x)
 - Added scorer placeholder replacement (EvalLog.populate_scorer_name_for_samples)
-- 24 new bypass correctness tests (103 total, all passing)
+- 38 bypass correctness tests (117 total, all passing)
 - Final benchmarks and plots
 
 ### Details and examples
@@ -35,3 +35,14 @@
 ### Notes
 - The `_fast_construct` approach is fragile to inspect_ai model changes (new fields, renamed fields, new validators). If inspect_ai updates its Pydantic models, the bypass may need updates. The comprehensive correctness tests should catch regressions.
 - The high variance in benchmark timings (271ms to 493ms for the same operation) is likely GC/cache related. Using min or p25 may be more representative than median for stable benchmarks.
+
+## Merge additional bypass tests 03/06/2026 01:48 - commit 7f0eae5
+
+### What was done
+- Added 11 isolated unit tests for construction helpers, inspired by parallel branch's test suite
+- Tests cover: basic construct_sample_fast, content list handling, tool call construction, ModelOutput completion auto-population/preservation, score/model_usage construction, event construction from real data, comprehensive field type checking, model_dump roundtrip, all message roles
+- Updated test count in write-ups (was incorrectly stated as 103, actual is 117)
+- Total: 117 tests (79 prior + 38 bypass-specific), all passing
+
+### Key findings
+- No issues found — all new tests pass, confirming the bypass correctness from additional angles

@@ -2,8 +2,12 @@
 
 These tests verify that construct_sample_fast produces EvalSample instances
 whose model_dump() output matches that of EvalSample.model_validate().
+
+Includes both end-to-end pipeline tests and isolated unit tests for individual
+construction helpers (_construct_message, _construct_model_output, etc.).
 """
 
+import copy
 import math
 import os
 from pathlib import Path
@@ -22,7 +26,15 @@ from inspect_ai.model._chat_message import (
 from inspect_ai.model._model_output import ChatCompletionChoice, ModelOutput, ModelUsage
 from inspect_ai.scorer._metric import Score
 from inspect_fast_loader import patch, unpatch
-from inspect_fast_loader._construct import construct_sample_fast, _fast_construct
+from inspect_fast_loader._construct import (
+    construct_sample_fast,
+    _fast_construct,
+    _construct_message,
+    _construct_model_output,
+    _construct_score,
+    _construct_model_usage,
+    _construct_event,
+)
 from inspect_fast_loader._native import read_eval_file
 
 TEST_LOGS_DIR = Path(__file__).parent.parent.parent / "test_logs"
@@ -457,3 +469,156 @@ def test_bypass_sandbox_list_migration():
     c_dump = constructed.model_dump()
     diffs = _deep_compare(v_dump, c_dump)
     assert not diffs, f"Sandbox list migration differences: {diffs[:10]}"
+
+
+# ---- Isolated unit tests for construction helpers ----
+# (Inspired by Branch 1's test suite for additional coverage)
+
+
+def test_construct_sample_fast_basic():
+    """Isolated unit test: construct_sample_fast on every sample from 10-sample file."""
+    raw = read_eval_file(str(TEST_LOGS_DIR / "test_10samples.eval"))
+    ctx = get_deserializing_context()
+
+    for sd in raw["samples"]:
+        orig = EvalSample.model_validate(copy.deepcopy(sd), context=ctx)
+        fast = construct_sample_fast(copy.deepcopy(sd))
+        diffs = _deep_compare(orig.model_dump(), fast.model_dump())
+        assert not diffs, f"Differences: {diffs[:10]}"
+
+
+def test_construct_message_with_content_list():
+    """Test message construction with content as a list of ContentText."""
+    msg = _construct_message({
+        "role": "user",
+        "content": [{"type": "text", "text": "hello world"}],
+    })
+    assert isinstance(msg.content, list)
+    assert len(msg.content) == 1
+    assert hasattr(msg.content[0], "text")
+    assert msg.content[0].text == "hello world"
+
+
+def test_construct_assistant_with_tool_calls():
+    """Test assistant message with tool_calls constructs ToolCall objects."""
+    msg = _construct_message({
+        "role": "assistant",
+        "content": "I'll use a tool",
+        "tool_calls": [
+            {"id": "tc1", "function": "search", "arguments": {"q": "test"}},
+        ],
+    })
+    assert msg.tool_calls is not None
+    assert len(msg.tool_calls) == 1
+    assert msg.tool_calls[0].id == "tc1"
+    assert msg.tool_calls[0].function == "search"
+    assert msg.tool_calls[0].arguments == {"q": "test"}
+
+
+def test_construct_model_output_sets_completion():
+    """Test that ModelOutput.completion is auto-populated from choices when empty."""
+    output = _construct_model_output({
+        "model": "test-model",
+        "choices": [
+            {"message": {"role": "assistant", "content": "hello world"}, "stop_reason": "stop"},
+        ],
+    })
+    assert output.completion == "hello world"
+
+
+def test_construct_model_output_preserves_completion():
+    """Test that an existing completion is NOT overwritten by set_completion logic."""
+    output = _construct_model_output({
+        "model": "test-model",
+        "completion": "existing completion",
+        "choices": [
+            {"message": {"role": "assistant", "content": "different text"}, "stop_reason": "stop"},
+        ],
+    })
+    assert output.completion == "existing completion"
+
+
+def test_construct_score_basic():
+    """Test isolated Score construction with all fields."""
+    score = _construct_score({"value": "C", "answer": "C", "explanation": "correct"})
+    assert isinstance(score, Score)
+    assert score.value == "C"
+    assert score.answer == "C"
+    assert score.explanation == "correct"
+    assert score.history == []  # default
+    assert score.metadata is None  # default
+
+
+def test_construct_model_usage_basic():
+    """Test isolated ModelUsage construction."""
+    usage = _construct_model_usage({
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "total_tokens": 150,
+    })
+    assert isinstance(usage, ModelUsage)
+    assert usage.input_tokens == 100
+    assert usage.output_tokens == 50
+    assert usage.total_tokens == 150
+    assert usage.reasoning_tokens is None  # default
+
+
+def test_construct_event_from_real_data():
+    """Test Event construction matches model_validate for real events from test data."""
+    from pydantic import TypeAdapter
+    from inspect_ai.log._log import Event
+
+    raw = read_eval_file(str(TEST_LOGS_DIR / "test_10samples.eval"))
+    ctx = get_deserializing_context()
+    event_adapter = TypeAdapter(Event)
+
+    for sample_data in raw["samples"]:
+        for event_data in sample_data.get("events", []):
+            orig = event_adapter.validate_python(copy.deepcopy(event_data), context=ctx)
+            fast = _construct_event(copy.deepcopy(event_data))
+            diffs = _deep_compare(orig.model_dump(), fast.model_dump())
+            assert not diffs, f"Event '{event_data.get('event')}' differences: {diffs[:5]}"
+
+
+def test_bypass_sample_field_types():
+    """Comprehensive check that all EvalSample fields have correct Python types."""
+    raw = read_eval_file(str(TEST_LOGS_DIR / "test_10samples.eval"))
+    s = construct_sample_fast(raw["samples"][0])
+
+    assert isinstance(s.id, (int, str))
+    assert isinstance(s.epoch, int)
+    assert isinstance(s.input, (str, list))
+    assert isinstance(s.target, (str, list))
+    assert isinstance(s.messages, list)
+    assert isinstance(s.events, list)
+    assert isinstance(s.metadata, dict)
+    assert isinstance(s.store, dict)
+    assert isinstance(s.model_usage, dict)
+    assert isinstance(s.attachments, dict)
+    if s.scores is not None:
+        assert isinstance(s.scores, dict)
+    if s.output is not None:
+        assert isinstance(s.output, ModelOutput)
+
+
+def test_bypass_model_dump_roundtrip():
+    """Test that bypass objects can be serialized back with model_dump for every sample."""
+    raw = read_eval_file(str(TEST_LOGS_DIR / "test_10samples.eval"))
+
+    for sd in raw["samples"]:
+        s = construct_sample_fast(sd)
+        d = s.model_dump()
+        assert isinstance(d, dict)
+        assert "id" in d
+        assert "epoch" in d
+        assert "input" in d
+        assert "messages" in d
+        assert "events" in d
+
+
+def test_construct_message_all_roles():
+    """Test that all four message role types are correctly constructed."""
+    for role in ["system", "user", "assistant", "tool"]:
+        msg = _construct_message({"role": role, "content": f"hello from {role}"})
+        assert msg.role == role
+        assert msg.content == f"hello from {role}"
