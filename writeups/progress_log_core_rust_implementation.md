@@ -1,5 +1,19 @@
 # Progress Log: core_rust_implementation
 
+## Optimized .json handling: fall back to original 03/05/2026 23:05 - commit 9bea610
+
+### What was done
+- Profiled Rust read_json_file vs pydantic_core.from_json: 115ms vs 35ms for 1000-sample file
+- Changed .json format to fall back to original implementation entirely (both full and header-only)
+- Cleaned up unused code (_build_eval_log_from_json_file, _validate_version, read_json_file import in _patch.py)
+- Re-ran benchmarks: .json reads now at ~1.0x (no regression)
+
+### Key findings
+- pydantic_core.from_json is ~3x faster at JSON→Python conversion than our serde_json→PyDict path
+- This is because pydantic_core is specifically optimized for JSON→Python (it's Rust internally too)
+- The Rust read_json_file function still exists and works, just not used in monkey-patching
+- Final .eval speedups: 1.75-2.04x for full reads, 2.85-2.92x for batch headers
+
 ## Core Rust implementation complete 03/05/2026 22:52 - commit d4fb9ca
 
 ### What was done
@@ -18,13 +32,12 @@
 - **Plots**: `plots/benchmark_speedup.png`, `plots/benchmark_absolute_times.png`
 
 ### Key findings
-- **.eval full reads**: 1.84-2.19x speedup (scales with sample count)
-- **.json full reads**: ~0.9x (slight regression) — pydantic_core.from_json is already Rust-backed, our extra dict conversion step adds overhead
-- **Batch headers**: 2.7-2.8x speedup from concurrent execution
+- **.eval full reads**: 1.75-2.04x speedup (scales with sample count)
+- **.json full reads**: Falls back to original (~1.0x) — pydantic_core.from_json is already Rust-backed and faster
+- **Batch headers**: 2.85-2.92x speedup from concurrent execution
 - **Pydantic model_validate is still the dominant bottleneck** — at 1000 samples, it accounts for most of the ~1s read time even with Rust parsing
 - **Upstream bug found**: inspect_ai's `_read_header_streaming` crashes on error/cancelled .json logs when results=null (TypeError: EvalResults(**v) where v is None)
 
 ### Notes
-- The `.json` full read regression is expected: serde_json→Python dict→model_validate vs pydantic_core.from_json→model_validate. The extra conversion step costs ~5-10% overhead.
-- Header-only .json falls back to original (ijson streaming is optimal for this case)
-- The 2.19x speedup for .eval 1000-sample full reads is meaningful but below the 5x target — bypassing Pydantic (Segments 3/4) is needed
+- The 2.04x speedup for .eval 1000-sample full reads is meaningful but below the 5x target — bypassing Pydantic (Segments 3/4) is needed
+- .eval header-only for large files has regression (26ms vs 6ms for 1000 samples) due to reading full ZIP — per instructions this is acceptable

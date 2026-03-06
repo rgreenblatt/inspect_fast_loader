@@ -14,10 +14,10 @@ See `write_up_documentation_scaffold_setup.md` for detailed findings.
 See `write_up_core_rust_implementation.md` for detailed findings and plots.
 
 ### Key Results
-- **.eval full read 1000 samples**: 2132ms → 973ms (**2.19x speedup**)
-- **.eval full read 100 samples**: 178ms → 96ms (**1.84x speedup**)
-- **Batch headers (50 .eval files)**: 98ms → 35ms (**2.84x speedup**)
-- **.json full reads**: ~0.9x (slight regression — pydantic_core.from_json is already Rust-backed)
+- **.eval full read 1000 samples**: 2091ms → 1025ms (**2.04x speedup**)
+- **.eval full read 100 samples**: 175ms → 91ms (**1.92x speedup**)
+- **Batch headers (50 .eval files)**: 93ms → 33ms (**2.85x speedup**)
+- **.json format**: Falls back to original (~1.0x) — pydantic_core.from_json is already Rust-backed
 - **Pydantic model_validate remains the dominant bottleneck** — must be bypassed for 5x+ targets
 
 ![Benchmark Speedup](../plots/benchmark_speedup.png)
@@ -25,13 +25,13 @@ See `write_up_core_rust_implementation.md` for detailed findings and plots.
 ### What Was Built
 - Rust NaN/Inf-safe JSON parser (pre-processing sentinel approach)
 - Rust `.eval` reader: ZIP decompression + JSON parsing → Python dicts
-- Rust `.json` reader: file read + JSON parsing → Python dict
-- Monkey-patching with actual fast implementations (falls back to original for IO[bytes] and header-only .json)
+- Rust `.json` reader: file read + JSON parsing (not used in monkey-patching, falls back to original)
+- Monkey-patching: replaces 4 functions, falls back to original for IO[bytes] and .json format
 - 70 tests total (42 correctness + 28 existing), all passing
 
 ## Important Choices
 - Test logs generated via direct JSON/ZIP construction (simpler, verified loadable)
 - Monkey-patching approach: replace 4 functions on `inspect_ai.log._file` module
 - NaN/Inf: pre-processing sentinel approach (simple, fast, correct)
-- Header-only .json: fall back to original (ijson streaming is faster than full parse + discard)
+- .json format: fall back to original (pydantic_core.from_json is already Rust-backed and faster)
 - IO[bytes] input: fall back to original (Rust functions expect file paths)
