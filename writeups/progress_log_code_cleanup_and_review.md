@@ -23,3 +23,30 @@
 ### Notes
 - The Pyright diagnostics showing "import could not be resolved" are expected — inspect_ai is in the venv, not available to the IDE
 - The `_TESTED_INSPECT_VERSION` check only warns, doesn't block, to avoid breaking users who upgrade inspect_ai
+
+## Correctness fixes from subagent review - 03/06/2026 03:40 - commit 610a79c
+
+### What was done
+A review subagent identified two correctness bugs in `_construct.py`:
+
+1. **Event `completed` field not converted to datetime**: `ToolEvent`, `ModelEvent`, `SandboxEvent`, and `SubtaskEvent` all have a `completed` field of type `AwareDatetime`. The fast construct left it as a string, causing `model_dump()` to fail with a serialization error.
+
+2. **Nested Pydantic models in ToolEvent/ApprovalEvent not constructed**: Several event types had nested objects left as raw dicts:
+   - `ToolEvent.error` (ToolCallError — plain dataclass)
+   - `ToolEvent.view` (ToolCallContent — BaseModel)
+   - `ApprovalEvent.call` and `ApprovalEvent.modified` (ToolCall — pydantic dataclass)
+   - `ApprovalEvent.view` (ToolCallView — BaseModel)
+
+These weren't caught by existing tests because the test log generator doesn't produce events with these fields populated.
+
+### Fixes applied
+- Added `completed` datetime conversion in `_construct_event()` (alongside existing `timestamp` conversion)
+- Added construction helpers: `_construct_tool_call_error()`, `_construct_tool_call_content()`, `_construct_tool_call_view()`
+- Added handling for `tool` and `approval` event types in `_construct_event()`
+- Added 3 new tests covering these code paths
+- Fixed stale docstring in `_fast_read_eval_log_samples_impl`
+
+### Key findings
+- These were pre-existing bugs, not introduced by cleanup. They would manifest with real-world data containing tool calls with timing info, errors, or approval events.
+- Test data coverage was insufficient — the test generator doesn't produce events with `completed`, `error`, or approval-related fields.
+- **180 tests now pass, 0 skipped, 0 failed**

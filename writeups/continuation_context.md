@@ -30,7 +30,7 @@ Note: `RUSTUP_HOME` must be set explicitly for maturin to find rustc.
 - **Batch header scaling drops with large-header files**: A 5000-sample log's header.json takes ~31ms to read. This dominates batch reads including that file.
 
 ## Current State
-All phases complete. 177 tests pass, 0 skipped, 0 failed. 9 functions patched. All performance targets met.
+All phases complete. 180 tests pass, 0 skipped, 0 failed. 9 functions patched. All performance targets met.
 
 Tested against inspect_ai version 0.3.188. The `__init__.py` warns on version mismatch.
 

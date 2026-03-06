@@ -43,7 +43,19 @@ The `patch()` function in `_patch.py` had 9 repetitive blocks (one per patched f
 - Verified patch/unpatch/patch cycle works without state leakage
 - Verified error handling and fallback paths
 
+### Correctness Bugs Found and Fixed
+A review subagent identified two pre-existing correctness bugs in `_construct.py`:
+
+1. **Event `completed` field**: `ToolEvent`, `ModelEvent`, `SandboxEvent`, `SubtaskEvent` have a `completed` AwareDatetime field that was left as a string, causing `model_dump()` serialization failure. Fixed by converting alongside `timestamp`.
+
+2. **Nested models in ToolEvent/ApprovalEvent**: Several nested objects were left as raw dicts:
+   - `ToolEvent.error` (ToolCallError), `ToolEvent.view` (ToolCallContent)
+   - `ApprovalEvent.call`, `ApprovalEvent.modified` (ToolCall), `ApprovalEvent.view` (ToolCallView)
+   Fixed by adding construction helpers and event-type-specific handling.
+
+Added 3 new tests covering these code paths.
+
 ## Final State
-- **177 tests pass, 0 skipped, 0 failed**
+- **180 tests pass, 0 skipped, 0 failed**
 - All performance targets met (verified by benchmarks)
 - Code is clean and well-documented
