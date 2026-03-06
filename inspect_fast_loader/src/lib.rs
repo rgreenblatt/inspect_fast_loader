@@ -252,7 +252,7 @@ fn read_zip_member(data: &[u8], member_name: &str) -> PyResult<Vec<u8>> {
     let mut file = archive
         .by_name(member_name)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyKeyError, _>(e.to_string()))?;
-    let mut buf = Vec::new();
+    let mut buf = Vec::with_capacity(file.size() as usize);
     file.read_to_end(&mut buf)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
     Ok(buf)

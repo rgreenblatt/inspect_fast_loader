@@ -66,9 +66,13 @@ def _py_read_eval_summaries(path: str) -> list[dict]:
         if "summaries.json" in names:
             return json.loads(zf.read("summaries.json"))
 
+        def _journal_sort_key(name: str) -> int:
+            stem = name.split("/")[-1].removesuffix(".json")
+            return int(stem) if stem.isdigit() else 0
+
         journal_names = sorted(
             [n for n in names if n.startswith("_journal/summaries/") and n.endswith(".json")],
-            key=lambda n: int(n.split("/")[-1].removesuffix(".json")) if n.split("/")[-1].removesuffix(".json").isdigit() else 0,
+            key=_journal_sort_key,
         )
         result: list[dict] = []
         for name in journal_names:

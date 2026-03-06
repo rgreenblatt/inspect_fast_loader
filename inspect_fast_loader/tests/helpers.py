@@ -6,53 +6,14 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from inspect_fast_loader._native import (
-    read_eval_file as _read_eval_file_raw,
-    read_eval_headers_batch as _read_eval_headers_batch_raw,
-    read_eval_sample as _read_eval_sample_raw,
-    read_eval_summaries as _read_eval_summaries_raw,
+from inspect_fast_loader._zip import (
+    read_eval_file,
+    read_eval_headers_batch,
+    read_eval_sample,
+    read_eval_summaries,
 )
 
 TEST_LOG_DIR = Path(__file__).parent.parent.parent / "test_logs"
-
-
-# -- Wrappers around native Rust functions that json.loads the raw bytes --
-
-def read_eval_file(path: str, **kwargs) -> dict:
-    raw = _read_eval_file_raw(path, **kwargs)
-    return {
-        "has_header_json": raw["has_header_json"],
-        "header": json.loads(raw["header"]),
-        "reductions": json.loads(raw["reductions"]) if raw["reductions"] is not None else None,
-        "samples": [json.loads(s) for s in raw["samples"]] if raw["samples"] is not None else None,
-    }
-
-
-def read_eval_sample(path: str, entry_name: str) -> dict:
-    return json.loads(_read_eval_sample_raw(path, entry_name))
-
-
-def read_eval_summaries(path: str) -> list:
-    raw = _read_eval_summaries_raw(path)
-    if isinstance(raw, bytes):
-        return json.loads(raw)
-    result = []
-    for chunk in raw:
-        result.extend(json.loads(chunk))
-    return result
-
-
-def read_eval_headers_batch(paths: list[str]) -> list[dict]:
-    raw_results = _read_eval_headers_batch_raw(paths)
-    return [
-        {
-            "header": json.loads(r["header"]),
-            "samples": None,
-            "has_header_json": r["has_header_json"],
-            "reductions": json.loads(r["reductions"]) if r["reductions"] is not None else None,
-        }
-        for r in raw_results
-    ]
 
 
 # -- Minimal .eval ZIP builder for tests --

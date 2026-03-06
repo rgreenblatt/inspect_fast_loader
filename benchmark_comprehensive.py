@@ -165,7 +165,7 @@ def run_benchmarks(config_name, eval_files_by_size, json_files_by_size, all_eval
     return results
 
 
-def find_files_by_size(file_list, format_ext):
+def find_files_by_size(file_list):
     """Group files by approximate sample count."""
     from inspect_ai.log._file import read_eval_log
     import inspect_fast_loader
@@ -208,8 +208,8 @@ def main():
     print(f"Found {len(all_eval_files)} .eval files, {len(all_json_files)} .json files")
 
     # Categorize files by size
-    eval_by_size = find_files_by_size(all_eval_files, ".eval")
-    json_by_size = find_files_by_size(all_json_files, ".json")
+    eval_by_size = find_files_by_size(all_eval_files)
+    json_by_size = find_files_by_size(all_json_files)
 
     print("\nFile size categories:")
     for label, files in sorted(eval_by_size.items()):

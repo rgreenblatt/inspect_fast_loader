@@ -147,7 +147,7 @@ def _fallback_to_original_sync(
     resolve_attachments: bool | Literal["full", "core"],
     format: Literal["eval", "json", "auto"],
 ) -> EvalLog:
-    """Call the original read_eval_log_async directly, avoiding double-dispatch."""
+    """Run the original async read_eval_log via run_coroutine for sync callers."""
     from inspect_ai._util._async import run_coroutine
     return run_coroutine(
         _originals["read_eval_log_async"](log_file, header_only, resolve_attachments, format)
@@ -223,7 +223,7 @@ async def _fast_read_eval_log_async_impl(
 
 
 def _fast_read_eval_log_headers_impl(
-    log_files: list[str] | list[EvalLogInfo],
+    log_files: list[str] | list[Path] | list[EvalLogInfo],
     progress: Any = None,
 ) -> list[EvalLog]:
     from inspect_ai._util._async import run_coroutine
