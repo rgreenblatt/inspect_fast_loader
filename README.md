@@ -1,8 +1,8 @@
 # inspect_fast_loader
 
-Drop-in accelerator for [inspect_ai](https://github.com/UKGovernmentBEIS/inspect_ai) log reading. ~6-8x faster with zero API changes.
+Drop-in accelerator for [inspect_ai](https://github.com/UKGovernmentBEIS/inspect_ai) log reading. ~4-7x faster with zero API changes.
 
-The speedup comes from bypassing Pydantic `model_validate()` when constructing `EvalSample` objects — the dominant bottleneck (85-90% of read time). An optional Rust native extension provides additional ~2x on `.eval` (ZIP) files via faster decompression.
+The speedup comes from bypassing Pydantic `model_validate()` when constructing `EvalSample` objects — the dominant bottleneck (85-90% of read time). An optional Rust native extension provides faster ZIP decompression for `.eval` files.
 
 ## Installation
 
@@ -38,21 +38,25 @@ inspect_fast_loader.unpatch() # restore originals (optional)
 
 ## Performance
 
-Tested against inspect_ai v0.3.188, 1000-sample .eval file:
+Tested against inspect_ai v0.3.188 (in-process, warm cache):
 
-| | Original | Fast (pure Python) | Fast (with Rust) |
+| Operation | Original | Fast | Speedup |
 |---|---|---|---|
-| .eval full read | ~900ms | ~150ms (**6x**) | ~110ms (**8x**) |
-| .json full read | ~560ms | ~90ms (**6x**) | ~90ms (**6x**) |
+| .eval full read (1000 samples) | 932ms | 246ms | **3.8x** |
+| .json full read (1000 samples) | 572ms | 89ms | **6.5x** |
+| Batch headers (25 files) | 16ms | 2ms | **6.9x** |
+| .eval full read (100 samples) | 93ms | 25ms | **3.8x** |
+| .json full read (100 samples) | 57ms | 9ms | **6.5x** |
 
-The Rust extension helps `.eval` files (~2x faster ZIP decompression). For `.json` files there's no difference since no ZIP is involved.
+Run `python benchmark.py` (or `python benchmark.py --thorough`) to reproduce.
 
 ## Testing
 
 ```bash
-python generate_test_logs.py
 pytest tests/
 ```
+
+Test logs are auto-generated on first run.
 
 ## How it works
 
