@@ -177,8 +177,8 @@ def _fast_read_eval_log_impl(
         raw = read_eval_file(path, header_only=False)
         log = _build_eval_log_from_eval_file(raw, path, header_only=False)
     elif fmt == "json":
-        with open(path, "rb") as f:
-            raw = json.loads(f.read())
+        with open(path) as f:
+            raw = json.load(f)
         log = _build_eval_log_from_json_file(raw, path)
     else:
         raise ValueError(f"Unknown format: {fmt}")
@@ -261,7 +261,7 @@ async def _fast_read_eval_log_headers_async_impl(
                 progress.after_read_log(path)
 
     if json_files:
-        read_fn = _originals.get("read_eval_log_async") or getattr(_file_module, "read_eval_log_async")
+        read_fn = _originals["read_eval_log_async"]
 
         async def _read_json(idx: int, lf: Any) -> None:
             log = await read_fn(lf, header_only=True)
@@ -271,7 +271,8 @@ async def _fast_read_eval_log_headers_async_impl(
 
         await asyncio.gather(*[_read_json(idx, lf) for idx, lf in zip(json_indices, json_files)])
 
-    return [r for r in results if r is not None]
+    assert all(r is not None for r in results), "Some log files were not read"
+    return results  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------

@@ -26,15 +26,9 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def _open_zip(path: str) -> zipfile.ZipFile:
-    """Open a ZIP file, raising clear errors for common failure modes."""
+    """Open a ZIP file, converting BadZipFile to ValueError for consistency with the Rust backend."""
     try:
         return zipfile.ZipFile(path)
-    except FileNotFoundError:
-        raise
-    except IsADirectoryError:
-        raise
-    except PermissionError:
-        raise
     except zipfile.BadZipFile as e:
         raise ValueError(f"Invalid ZIP file: {e}") from e
 
