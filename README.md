@@ -1,6 +1,6 @@
 # inspect_fast_loader
 
-Drop-in accelerator for [inspect_ai](https://github.com/UKGovernmentBEIS/inspect_ai) log reading. ~4-7x faster with zero API changes.
+Drop-in accelerator for [inspect_ai](https://github.com/UKGovernmentBEIS/inspect_ai) log reading. ~6-8x faster with zero API changes.
 
 The speedup comes from bypassing Pydantic `model_validate()` when constructing `EvalSample` objects — the dominant bottleneck (85-90% of read time). An optional Rust native extension provides faster ZIP decompression for `.eval` files.
 
@@ -42,11 +42,11 @@ Tested against inspect_ai v0.3.188 (in-process, warm cache):
 
 | Operation | Original | Fast | Speedup |
 |---|---|---|---|
-| .eval full read (1000 samples) | 932ms | 246ms | **3.8x** |
-| .json full read (1000 samples) | 572ms | 89ms | **6.5x** |
-| Batch headers (25 files) | 16ms | 2ms | **6.9x** |
-| .eval full read (100 samples) | 93ms | 25ms | **3.8x** |
-| .json full read (100 samples) | 57ms | 9ms | **6.5x** |
+| .eval full read (1000 samples) | 929ms | 115ms | **8.1x** |
+| .json full read (1000 samples) | 569ms | 87ms | **6.5x** |
+| Batch headers (25 files) | 15ms | 2ms | **8.0x** |
+| .eval full read (100 samples) | 94ms | 12ms | **8.1x** |
+| .json full read (100 samples) | 56ms | 9ms | **6.1x** |
 
 Run `python benchmark.py` (or `python benchmark.py --thorough`) to reproduce.
 

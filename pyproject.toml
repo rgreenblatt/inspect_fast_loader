@@ -19,6 +19,7 @@ target = "inspect_fast_loader._native"
 path = "rust/Cargo.toml"
 binding = "PyO3"
 optional = true
+debug = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
