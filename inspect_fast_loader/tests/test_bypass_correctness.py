@@ -756,3 +756,20 @@ def test_construct_subtask_event_input_migration():
     assert event.input == {}
     d = event.model_dump()
     assert d["input"] == {}
+
+
+def test_construct_tool_message_with_deprecated_tool_error():
+    """Test that ChatMessageTool with deprecated 'tool_error' field migrates to 'error'."""
+    from inspect_ai.tool._tool_call import ToolCallError
+
+    msg = _construct_message({
+        "role": "tool",
+        "content": "tool output",
+        "tool_error": "something went wrong",
+    })
+    assert msg.role == "tool"
+    assert isinstance(msg.error, ToolCallError)
+    assert msg.error.type == "unknown"
+    assert msg.error.message == "something went wrong"
+    d = msg.model_dump()
+    assert d["error"]["type"] == "unknown"

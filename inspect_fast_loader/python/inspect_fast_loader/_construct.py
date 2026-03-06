@@ -228,6 +228,13 @@ def _construct_message(data: dict) -> Any:
     if cls is None:
         return data
 
+    # Replicate ChatMessageTool.convert_tool_error_to_error (model_validator mode="before")
+    # Migrates deprecated "tool_error" field to "error" as ToolCallError
+    if role == "tool" and "tool_error" in data:
+        tool_error = data.pop("tool_error")
+        if tool_error and "error" not in data:
+            data["error"] = ToolCallError("unknown", tool_error)
+
     # Process content if it's a list of content objects
     if isinstance(data.get("content"), list):
         data["content"] = _construct_content(data["content"])

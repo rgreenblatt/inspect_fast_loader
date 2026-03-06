@@ -70,3 +70,15 @@ Added 7 new tests covering all these code paths.
 - The ScoreEditEvent handler was a copy-paste bug — it was trying to construct a `score` field that doesn't exist on ScoreEditEvent
 - The LoggerEvent level migration is a data correctness issue (not just serialization) — old logs with "tools"/"sandbox" levels would retain incorrect values
 - **186 tests now pass, 0 skipped, 0 failed**
+
+## Branch merge finalization - 03/06/2026 04:44
+
+### What was done
+After branch selection, incorporated useful context from Branch 1 and fixed one additional model_validator gap:
+
+1. **ChatMessageTool.convert_tool_error_to_error**: Branch 1 had this migration replicated but we didn't. Migrates deprecated `tool_error` field to `error` as `ToolCallError("unknown", tool_error)`. Added to `_construct_message()`.
+2. **Updated continuation_context.md**: Incorporated additional learned context entries from Branch 1 (PyO3 API notes, EvalLogInfo location, cancelled log behavior, comprehensive list of model_validators to replicate).
+3. Added test for the tool_error migration.
+
+### Key findings
+- **187 tests now pass, 0 skipped, 0 failed**
