@@ -1,23 +1,18 @@
 # inspect_fast_loader
 
-A Rust/Python extension that monkey-patches [inspect_ai](https://github.com/UKGovernmentBEIS/inspect_ai)'s log reading functions for 5-13x speedups.
+Drop-in accelerator for [inspect_ai](https://github.com/UKGovernmentBEIS/inspect_ai) log reading. ~6-8x faster with zero API changes.
 
-The speedup comes from two techniques:
-- **Pydantic bypass**: Constructing `EvalSample` and nested model instances via direct `__dict__` assignment instead of `model_validate()`, which is the dominant bottleneck (85-90% of read time).
-- **Rust native extension** (PyO3/maturin): Faster ZIP decompression and parallel batch header reading via rayon.
+The speedup comes from bypassing Pydantic `model_validate()` when constructing `EvalSample` objects — the dominant bottleneck (85-90% of read time). An optional Rust native extension provides additional ~2x on `.eval` (ZIP) files via faster decompression.
 
-## Performance
+## Installation
 
-Fresh-process benchmark results (isolated subprocesses, tested against inspect_ai v0.3.188):
+```bash
+pip install git+https://github.com/rgreenblatt/inspect_fast_loader.git
+```
 
-| Operation | Original | Fast | Speedup |
-|---|---|---|---|
-| .eval full read (1000 samples) | 2059ms | 376ms | **5.48x** |
-| .eval full read (100 samples) | 171ms | 23ms | **7.36x** |
-| .json full read (1000 samples) | 1095ms | 388ms | **2.83x** |
-| batch headers (50 files) | 93ms | 9ms | **10.36x** |
-| single sample read | 5.2ms | 0.4ms | **13.0x** |
-| sample summaries | 3.4ms | 0.5ms | **6.80x** |
+If a Rust toolchain is available, the native extension builds automatically. If not, the package installs as pure Python — no Rust required.
+
+To install Rust (optional): https://rustup.rs
 
 ## Usage
 
@@ -31,41 +26,30 @@ inspect_fast_loader.unpatch() # restore originals (optional)
 
 Nine functions are patched: `read_eval_log`, `read_eval_log_async`, `read_eval_log_headers`, `read_eval_log_headers_async`, `read_eval_log_sample`, `read_eval_log_sample_async`, `read_eval_log_sample_summaries`, `read_eval_log_sample_summaries_async`, and `read_eval_log_samples`.
 
-## Building
+## Performance
 
-Requires Rust (via rustup) and a Python venv with inspect_ai installed.
+Tested against inspect_ai v0.3.188, 1000-sample .eval file:
 
-```bash
-cd inspect_fast_loader
-maturin develop --release
-```
+| | Original | Fast (pure Python) | Fast (with Rust) |
+|---|---|---|---|
+| .eval full read | ~900ms | ~150ms (**6x**) | ~110ms (**8x**) |
+| .json full read | ~560ms | ~90ms (**6x**) | ~90ms (**6x**) |
 
-If `maturin develop` can't find `rustc`, set the environment explicitly:
-
-```bash
-RUSTUP_HOME=$HOME/.rustup CARGO_HOME=$HOME/.cargo PATH=$HOME/.cargo/bin:$PATH maturin develop --release
-```
+The Rust extension helps `.eval` files (~2x faster ZIP decompression). For `.json` files there's no difference since no ZIP is involved.
 
 ## Testing
 
-Generate test logs, then run pytest:
-
 ```bash
-python generate_test_logs.py --output-dir test_logs
-cd inspect_fast_loader
-pytest tests/ -v
+python generate_test_logs.py
+pytest tests/
 ```
 
-## Benchmarking
+## How it works
 
-```bash
-# Primary benchmark (reliable, fresh-process isolation)
-python benchmark_fresh_process.py
+- **`_construct.py`**: Constructs `EvalSample` and all nested Pydantic models via direct `__dict__` assignment, skipping validators and `model_post_init`. Replicates all 7 data migration validators manually.
+- **`_zip.py`**: Reads `.eval` ZIP files using Python's `zipfile` module (or the Rust extension when available). JSON parsing uses Python's `json.loads` which natively handles NaN/Inf.
+- **`_patch.py`**: Monkey-patches `inspect_ai.log._file` functions to route through the fast implementations, with fallback to originals for unsupported inputs.
 
-# Secondary benchmark (in-process, may have caching artifacts)
-python benchmark_comprehensive.py
-```
+## Version compatibility
 
-## Fragility / Version Compatibility
-
-The Pydantic bypass in `_construct.py` hard-codes inspect_ai's model types and field names. If inspect_ai changes its models, the bypass may produce incorrect results. The package warns at import time if the installed inspect_ai version differs from the tested version (0.3.188). Run the test suite to verify correctness after upgrading.
+The Pydantic bypass hard-codes inspect_ai's model types. The package warns at import if the installed inspect_ai version differs from 0.3.188. Run the test suite after upgrading inspect_ai.
