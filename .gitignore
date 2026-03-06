@@ -30,8 +30,9 @@ test_logs/
 results/
 .pytest_cache/
 
-# Rust build artifacts
-inspect_fast_loader/target/
-inspect_ai_repo/
+# Build artifacts
+rust/target/
+build/
 *.so
 *.egg-info/
+inspect_ai_repo/

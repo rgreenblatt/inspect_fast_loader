@@ -13,7 +13,7 @@ from inspect_fast_loader._zip import (
     read_eval_summaries,
 )
 
-TEST_LOG_DIR = Path(__file__).parent.parent.parent / "test_logs"
+TEST_LOG_DIR = Path(__file__).parent.parent / "test_logs"
 
 
 # -- Minimal .eval ZIP builder for tests --
