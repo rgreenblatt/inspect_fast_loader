@@ -24,7 +24,7 @@ from inspect_ai.log._log import (
 )
 
 from inspect_fast_loader._construct import construct_sample_fast
-from inspect_fast_loader._native import read_eval_file
+from inspect_fast_loader._native import read_eval_file, read_json_file
 
 SCORER_PLACEHOLDER = "88F74D2C"
 
@@ -117,6 +117,32 @@ def _populate_scorer_placeholder(log: EvalLog) -> None:
             sample.scores[scorer_name] = sample.scores.pop(SCORER_PLACEHOLDER)
 
 
+def _build_eval_log_from_json_file(raw: dict, path: str, header_only: bool) -> EvalLog:
+    """Build an EvalLog from the dict returned by read_json_file (Rust .json reader).
+
+    For full reads, bypasses Pydantic model_validate for EvalSample construction.
+    For header-only reads, falls back to original (since header is small).
+    """
+    ctx = get_deserializing_context()
+
+    # Extract samples before header validation so EvalLog.populate_scorer_name_for_samples
+    # doesn't run on the raw sample dicts
+    sample_dicts = raw.pop("samples", None)
+
+    # Validate the header portion with EvalLog.model_validate (negligible overhead)
+    log = EvalLog.model_validate(raw, context=ctx)
+    log.location = path
+
+    # Construct samples using fast bypass
+    if not header_only and sample_dicts is not None:
+        samples = [construct_sample_fast(s) for s in sample_dicts]
+        sort_samples(samples)
+        log.samples = samples
+        _populate_scorer_placeholder(log)
+
+    return log
+
+
 def _is_bytes_input(log_file: Any) -> bool:
     """Check if log_file is a bytes stream (IO[bytes]) rather than a path."""
     return not isinstance(log_file, (str, Path, EvalLogInfo))
@@ -169,10 +195,12 @@ def _fast_read_eval_log_impl(
         raw = read_eval_file(path, header_only=False)
         log = _build_eval_log_from_eval_file(raw, path, header_only=False)
     elif fmt == "json":
-        # For .json format, fall back to the original Python implementation.
-        # pydantic_core.from_json() is already Rust-backed and optimized
-        # for producing Python objects from JSON.
-        return _fallback_to_original_sync(log_file, header_only, resolve_attachments, format)
+        if header_only:
+            # Header-only .json reads: fall back to original (streaming parser is efficient)
+            return _fallback_to_original_sync(log_file, header_only, resolve_attachments, format)
+        # Full .json reads: use Rust JSON parser + Pydantic bypass for samples
+        raw = read_json_file(path)
+        log = _build_eval_log_from_json_file(raw, path, header_only=False)
     else:
         raise ValueError(f"Unknown format: {fmt}")
 
@@ -213,8 +241,8 @@ async def _fast_read_eval_log_async_impl(
     path = _resolve_path(log_file)
     fmt = _detect_format(path, format)
 
-    # Fall back to original for: .json format, header-only .eval reads
-    if fmt == "json" or header_only:
+    # Fall back to original for header-only reads (both formats)
+    if header_only:
         return await _originals["read_eval_log_async"](log_file, header_only, resolve_attachments, format)
 
     # Run synchronous Rust I/O in a thread (only .eval full reads)

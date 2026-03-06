@@ -255,8 +255,6 @@ fn read_eval_file(py: Python<'_>, path: &str, header_only: bool) -> PyResult<PyO
     if header_only {
         result.set_item("samples", py.None())?;
     } else {
-        let samples_list = PyList::empty(py);
-
         // Collect sample entry names first (to avoid borrow issues)
         let sample_names: Vec<String> = entry_names
             .iter()
@@ -264,9 +262,52 @@ fn read_eval_file(py: Python<'_>, path: &str, header_only: bool) -> PyResult<PyO
             .cloned()
             .collect();
 
+        // Step 1: Extract raw bytes sequentially (ZIP requires sequential access)
+        let mut sample_bytes: Vec<Vec<u8>> = Vec::with_capacity(sample_names.len());
         for name in &sample_names {
-            let sample_data = read_and_parse_member(py, &mut archive, name)?;
-            samples_list.append(sample_data)?;
+            let mut file = archive.by_name(name).map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyKeyError, _>(
+                    format!("ZIP member not found: {name}: {e}"))
+            })?;
+            let mut buf = Vec::with_capacity(file.size() as usize);
+            file.read_to_end(&mut buf).map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyIOError, _>(
+                    format!("Failed to read {name}: {e}"))
+            })?;
+            sample_bytes.push(buf);
+        }
+
+        // Step 2: Parse JSON in parallel using rayon (release GIL during computation)
+        let parsed_values: Vec<Result<(serde_json::Value, bool), String>> =
+            py.allow_threads(|| {
+                use rayon::prelude::*;
+                sample_bytes.par_iter().map(|bytes| {
+                    // Try standard parsing first (fast path)
+                    match serde_json::from_slice::<serde_json::Value>(bytes) {
+                        Ok(value) => Ok((value, false)),
+                        Err(_) => {
+                            // Fall back to NaN/Inf preprocessing
+                            let (processed, had_replacements) = preprocess_nan_inf(bytes);
+                            if had_replacements {
+                                serde_json::from_slice::<serde_json::Value>(&processed)
+                                    .map(|v| (v, true))
+                                    .map_err(|e| format!("JSON parse error: {e}"))
+                            } else {
+                                Err(format!("JSON parse error in sample"))
+                            }
+                        }
+                    }
+                }).collect()
+            });
+
+        // Step 3: Convert serde_json::Value → Python objects (needs GIL)
+        let samples_list = PyList::empty(py);
+        for parsed in parsed_values {
+            let (value, had_nan_inf) = parsed.map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(e)
+            })?;
+            let py_obj = json_value_to_py(py, &value, had_nan_inf)?;
+            samples_list.append(py_obj)?;
         }
 
         result.set_item("samples", samples_list)?;
