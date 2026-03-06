@@ -101,12 +101,12 @@ def run_eval_and_test(task, task_name: str, *, eval_fn, read_eval_log, inspect_f
 
 
 def main():
-    api_key_path = Path("~/.anthropic_api_key").expanduser()
-    if not api_key_path.exists():
-        print(f"ERROR: {api_key_path} not found")
-        return 1
-
-    os.environ["ANTHROPIC_API_KEY"] = api_key_path.read_text().strip()
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        api_key_path = Path("~/.anthropic_api_key").expanduser()
+        if not api_key_path.exists():
+            print(f"ERROR: ANTHROPIC_API_KEY not set and {api_key_path} not found")
+            return 1
+        os.environ["ANTHROPIC_API_KEY"] = api_key_path.read_text().strip()
 
     log_dir = os.path.join(tempfile.mkdtemp(), "real_logs")
     os.environ["INSPECT_LOG_DIR"] = log_dir
