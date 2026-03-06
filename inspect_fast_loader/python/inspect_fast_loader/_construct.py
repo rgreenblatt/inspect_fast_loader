@@ -1,0 +1,441 @@
+"""Fast EvalSample construction bypassing Pydantic model_validate.
+
+Constructs EvalSample and nested Pydantic model instances without running
+validators, achieving ~10-20x speedup over model_validate while maintaining
+correct model_dump() output.
+
+The key techniques:
+1. Use _fast_construct() which sets __dict__ directly, skipping model_post_init
+   (critical for ChatMessage types which generate UUIDs in model_post_init)
+2. Apply the same migrations that model_validate would apply (migrate_deprecated, etc.)
+3. Construct all nested Pydantic model instances so model_dump() produces correct output
+4. Convert timestamp strings to datetime objects for events (required by serializer)
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from pydantic import BaseModel
+
+from inspect_ai._util.error import EvalError
+from inspect_ai.log._log import EvalSample, EvalSampleLimit
+from inspect_ai.model._chat_message import (
+    ChatMessageAssistant,
+    ChatMessageSystem,
+    ChatMessageTool,
+    ChatMessageUser,
+)
+from inspect_ai.model._model_output import ChatCompletionChoice, ModelOutput, ModelUsage
+from inspect_ai.scorer._metric import Score
+
+# Import all event types eagerly (once at module load)
+from inspect_ai.event._approval import ApprovalEvent
+from inspect_ai.event._compaction import CompactionEvent
+from inspect_ai.event._error import ErrorEvent
+from inspect_ai.event._info import InfoEvent
+from inspect_ai.event._input import InputEvent
+from inspect_ai.event._logger import LoggerEvent
+from inspect_ai.event._model import ModelEvent
+from inspect_ai.event._sample_init import SampleInitEvent
+from inspect_ai.event._sample_limit import SampleLimitEvent
+from inspect_ai.event._sandbox import SandboxEvent
+from inspect_ai.event._score import ScoreEvent
+from inspect_ai.event._score_edit import ScoreEditEvent
+from inspect_ai.event._span import SpanBeginEvent, SpanEndEvent
+from inspect_ai.event._state import StateEvent
+from inspect_ai.event._step import StepEvent
+from inspect_ai.event._store import StoreEvent
+from inspect_ai.event._subtask import SubtaskEvent
+from inspect_ai.event._tool import ToolEvent
+
+from inspect_ai._util.content import (
+    ContentAudio,
+    ContentData,
+    ContentDocument,
+    ContentImage,
+    ContentReasoning,
+    ContentText,
+    ContentToolUse,
+    ContentVideo,
+)
+
+_ROLE_CLS: dict[str, type[BaseModel]] = {
+    "system": ChatMessageSystem,
+    "user": ChatMessageUser,
+    "assistant": ChatMessageAssistant,
+    "tool": ChatMessageTool,
+}
+
+_CONTENT_CLS: dict[str, type[BaseModel]] = {
+    "text": ContentText,
+    "reasoning": ContentReasoning,
+    "image": ContentImage,
+    "audio": ContentAudio,
+    "video": ContentVideo,
+    "data": ContentData,
+    "tool_use": ContentToolUse,
+    "document": ContentDocument,
+}
+
+_EVENT_CLS: dict[str, type[BaseModel]] = {
+    "sample_init": SampleInitEvent,
+    "sample_limit": SampleLimitEvent,
+    "sandbox": SandboxEvent,
+    "state": StateEvent,
+    "store": StoreEvent,
+    "model": ModelEvent,
+    "tool": ToolEvent,
+    "approval": ApprovalEvent,
+    "compaction": CompactionEvent,
+    "input": InputEvent,
+    "score": ScoreEvent,
+    "score_edit": ScoreEditEvent,
+    "error": ErrorEvent,
+    "logger": LoggerEvent,
+    "info": InfoEvent,
+    "span_begin": SpanBeginEvent,
+    "span_end": SpanEndEvent,
+    "step": StepEvent,
+    "subtask": SubtaskEvent,
+}
+
+# Pre-compute field info for each model class to avoid repeated lookups.
+# Maps cls -> list of (field_name, is_required, default_value_or_factory)
+_FIELD_INFO_CACHE: dict[type, list[tuple[str, bool, Any]]] = {}
+
+
+def _get_field_info(cls: type) -> tuple[list[tuple[str, bool, Any]], dict[str, str]]:
+    """Get cached field info for a Pydantic model class.
+
+    Returns:
+        (field_list, alias_map) where:
+        - field_list: list of (name, is_required, default_or_factory)
+        - alias_map: maps alias -> field_name for fields with aliases
+    """
+    cached = _FIELD_INFO_CACHE.get(cls)
+    if cached is not None:
+        return cached
+    info = []
+    alias_map: dict[str, str] = {}
+    for name, field in cls.model_fields.items():
+        if field.is_required():
+            info.append((name, True, None))
+        elif field.default_factory is not None:
+            info.append((name, False, field.default_factory))
+        else:
+            info.append((name, False, field.default))
+        # Track aliases so we can map input dict keys to field names
+        if field.alias and field.alias != name:
+            alias_map[field.alias] = name
+        if field.validation_alias and isinstance(field.validation_alias, str) and field.validation_alias != name:
+            alias_map[field.validation_alias] = name
+    result = (info, alias_map)
+    _FIELD_INFO_CACHE[cls] = result
+    return result
+
+
+def _fast_construct(cls: type, data: dict) -> Any:
+    """Construct a Pydantic model instance without calling validators or model_post_init.
+
+    This sets __dict__ directly, bypassing:
+    - model_validators (mode="before", "after", "wrap")
+    - field validators
+    - model_post_init (e.g. ChatMessage UUID generation)
+
+    Fields not present in data get their defaults.
+    Handles field aliases (e.g. JSON "from" -> Python "from_").
+    """
+    field_info, alias_map = _get_field_info(cls)
+
+    # Remap aliased keys in data
+    if alias_map:
+        for alias, field_name in alias_map.items():
+            if alias in data and field_name not in data:
+                data[field_name] = data.pop(alias)
+
+    obj_dict = {}
+    for name, is_required, default_or_factory in field_info:
+        if name in data:
+            obj_dict[name] = data[name]
+        elif not is_required:
+            if callable(default_or_factory):
+                obj_dict[name] = default_or_factory()
+            else:
+                obj_dict[name] = default_or_factory
+
+    obj = cls.__new__(cls)
+    object.__setattr__(obj, "__dict__", obj_dict)
+    object.__setattr__(obj, "__pydantic_fields_set__", set(data.keys()))
+    object.__setattr__(obj, "__pydantic_extra__", None)
+    object.__setattr__(obj, "__pydantic_private__", None)
+    return obj
+
+
+def _construct_content_item(item: dict) -> Any:
+    """Construct a Content item (ContentText, ContentImage, etc.) from a dict."""
+    content_type = item.get("type", "text")
+    cls = _CONTENT_CLS.get(content_type)
+    if cls is not None:
+        return _fast_construct(cls, item)
+    return item
+
+
+def _construct_content(content: Any) -> Any:
+    """Handle message content — either a string or list of content dicts."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return [
+            _construct_content_item(item) if isinstance(item, dict) else item
+            for item in content
+        ]
+    return content
+
+
+def _construct_message(data: dict) -> Any:
+    """Construct a ChatMessage instance from a dict."""
+    role = data.get("role", "user")
+    cls = _ROLE_CLS.get(role)
+    if cls is None:
+        return data
+
+    # Process content if it's a list of content objects
+    if isinstance(data.get("content"), list):
+        data["content"] = _construct_content(data["content"])
+
+    # Construct tool_calls (pydantic_dataclass, not BaseModel)
+    if "tool_calls" in data and data["tool_calls"] is not None:
+        data["tool_calls"] = [
+            _construct_tool_call(tc) if isinstance(tc, dict) else tc
+            for tc in data["tool_calls"]
+        ]
+
+    return _fast_construct(cls, data)
+
+
+def _construct_model_usage(data: dict) -> ModelUsage:
+    return _fast_construct(ModelUsage, data)
+
+
+def _construct_score(data: dict) -> Score:
+    return _fast_construct(Score, data)
+
+
+def _construct_choice(data: dict) -> ChatCompletionChoice:
+    # Migrate stop_reason: "length" -> "max_tokens"
+    if data.get("stop_reason") == "length":
+        data["stop_reason"] = "max_tokens"
+
+    # Construct the message inside the choice
+    if "message" in data and isinstance(data["message"], dict):
+        data["message"] = _construct_message(data["message"])
+
+    return _fast_construct(ChatCompletionChoice, data)
+
+
+def _construct_model_output(data: dict) -> ModelOutput:
+    # Construct choices
+    if "choices" in data:
+        data["choices"] = [
+            _construct_choice(c) if isinstance(c, dict) else c
+            for c in data["choices"]
+        ]
+
+    # Construct usage
+    if "usage" in data and isinstance(data["usage"], dict):
+        data["usage"] = _construct_model_usage(data["usage"])
+
+    output = _fast_construct(ModelOutput, data)
+
+    # Replicate ModelOutput.set_completion validator (mode="after")
+    if not output.completion and output.choices:
+        output.completion = output.choices[0].message.text if output.choices else ""
+
+    return output
+
+
+from inspect_ai._util.json import JsonChange
+from inspect_ai.model._generate_config import GenerateConfig
+from inspect_ai.tool._tool_call import ToolCall
+
+
+def _construct_json_change(data: dict) -> JsonChange:
+    return _fast_construct(JsonChange, data)
+
+
+def _construct_tool_call(data: dict) -> ToolCall:
+    """Construct a ToolCall (pydantic_dataclass) from a dict."""
+    return ToolCall(
+        id=data.get("id", ""),
+        function=data.get("function", ""),
+        arguments=data.get("arguments", {}),
+        parse_error=data.get("parse_error"),
+        view=data.get("view"),
+        type=data.get("type", "function"),
+    )
+
+
+def _parse_timestamp(ts: Any) -> Any:
+    """Convert timestamp string to datetime if needed.
+
+    Event timestamps are UtcDatetime (pydantic AwareDatetime) which requires
+    a datetime object. The serializer also expects datetime (not str).
+    """
+    if isinstance(ts, str):
+        return datetime.fromisoformat(ts)
+    return ts
+
+
+def _construct_event(data: dict) -> Any:
+    """Construct an Event from a dict.
+
+    Events are a discriminated union of 19 types. We use the 'event' field
+    to determine the correct type and construct it.
+    """
+    event_type = data.get("event")
+    if event_type is None:
+        return data
+
+    cls = _EVENT_CLS.get(event_type)
+    if cls is None:
+        return data
+
+    # Convert timestamp string to datetime (required by serializer)
+    if "timestamp" in data:
+        data["timestamp"] = _parse_timestamp(data["timestamp"])
+
+    # Construct nested objects within specific event types
+    if event_type in ("state", "store"):
+        if "changes" in data and isinstance(data["changes"], list):
+            data["changes"] = [
+                _construct_json_change(c) if isinstance(c, dict) else c
+                for c in data["changes"]
+            ]
+    elif event_type == "model":
+        if "input" in data and isinstance(data["input"], list):
+            data["input"] = [
+                _construct_message(m) if isinstance(m, dict) else m
+                for m in data["input"]
+            ]
+        if "output" in data and isinstance(data["output"], dict):
+            data["output"] = _construct_model_output(data["output"])
+        if "config" in data and isinstance(data["config"], dict):
+            data["config"] = _fast_construct(GenerateConfig, data["config"])
+    elif event_type == "score":
+        if "score" in data and isinstance(data["score"], dict):
+            data["score"] = _construct_score(data["score"])
+    elif event_type == "score_edit":
+        if "score" in data and isinstance(data["score"], dict):
+            data["score"] = _construct_score(data["score"])
+
+    return _fast_construct(cls, data)
+
+
+def _construct_eval_error(data: dict) -> EvalError:
+    return _fast_construct(EvalError, data)
+
+
+def _construct_eval_sample_limit(data: dict) -> EvalSampleLimit:
+    return _fast_construct(EvalSampleLimit, data)
+
+
+def construct_sample_fast(data: dict) -> EvalSample:
+    """Construct an EvalSample bypassing Pydantic model_validate.
+
+    Replicates the data transformations from:
+    - EvalSample.migrate_deprecated (score -> scores, transcript -> events+attachments)
+    - migrate_values (sandbox list -> spec)
+    - ModelOutput.set_completion (auto-populate completion from choices)
+    - ChatCompletionChoice.migrate_stop_reason ("length" -> "max_tokens")
+
+    Constructs all nested Pydantic model instances using _fast_construct
+    which skips validators and model_post_init.
+    """
+    # === Apply EvalSample.migrate_deprecated ===
+
+    # 1. Convert old "score" field to "scores" dict with placeholder key
+    if "score" in data:
+        data["scores"] = {"88F74D2C": data.pop("score")}
+
+    # 2. Convert old "transcript" to "events" + "attachments"
+    if "transcript" in data:
+        transcript = data.pop("transcript")
+        data["events"] = transcript.get("events", [])
+        data["attachments"] = transcript.get("content", {})
+
+    # 3. Apply migrate_values (sandbox spec migration)
+    sandbox = data.get("sandbox")
+    if isinstance(sandbox, list):
+        from inspect_ai.util._sandbox.environment import SandboxEnvironmentSpec
+        data["sandbox"] = SandboxEnvironmentSpec(type=sandbox[0], config=sandbox[1])
+    elif isinstance(sandbox, dict):
+        from inspect_ai.util._sandbox.environment import SandboxEnvironmentSpec
+        data["sandbox"] = _fast_construct(SandboxEnvironmentSpec, sandbox)
+
+    # === Construct nested Pydantic model instances ===
+
+    # Messages
+    if "messages" in data:
+        data["messages"] = [
+            _construct_message(m) if isinstance(m, dict) else m
+            for m in data["messages"]
+        ]
+
+    # Input (when it's a list of messages)
+    if isinstance(data.get("input"), list):
+        data["input"] = [
+            _construct_message(m) if isinstance(m, dict) else m
+            for m in data["input"]
+        ]
+
+    # Output
+    if isinstance(data.get("output"), dict):
+        data["output"] = _construct_model_output(data["output"])
+
+    # Scores
+    scores = data.get("scores")
+    if scores:
+        data["scores"] = {
+            k: _construct_score(v) if isinstance(v, dict) else v
+            for k, v in scores.items()
+        }
+
+    # Events
+    if "events" in data:
+        data["events"] = [
+            _construct_event(e) if isinstance(e, dict) else e
+            for e in data["events"]
+        ]
+
+    # Model usage
+    if data.get("model_usage"):
+        data["model_usage"] = {
+            k: _construct_model_usage(v) if isinstance(v, dict) else v
+            for k, v in data["model_usage"].items()
+        }
+
+    # Role usage
+    if data.get("role_usage"):
+        data["role_usage"] = {
+            k: _construct_model_usage(v) if isinstance(v, dict) else v
+            for k, v in data["role_usage"].items()
+        }
+
+    # Error
+    if isinstance(data.get("error"), dict):
+        data["error"] = _construct_eval_error(data["error"])
+
+    # Error retries
+    if data.get("error_retries"):
+        data["error_retries"] = [
+            _construct_eval_error(e) if isinstance(e, dict) else e
+            for e in data["error_retries"]
+        ]
+
+    # Limit
+    if isinstance(data.get("limit"), dict):
+        data["limit"] = _construct_eval_sample_limit(data["limit"])
+
+    return _fast_construct(EvalSample, data)

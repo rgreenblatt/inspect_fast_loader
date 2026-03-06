@@ -5,7 +5,8 @@ Patches both sync and async variants:
 - read_eval_log_headers / read_eval_log_headers_async
 
 The Rust layer handles JSON parsing (with NaN/Inf support) and ZIP decompression.
-Python handles Pydantic model_validate for correctness (preserving all validators).
+For full reads, EvalSample construction bypasses Pydantic model_validate using
+fast direct construction (_construct.py) for ~5x+ overall speedup.
 """
 
 import asyncio
@@ -18,12 +19,14 @@ from inspect_ai._util.constants import get_deserializing_context
 from inspect_ai.log._file import EvalLogInfo
 from inspect_ai.log._log import (
     EvalLog,
-    EvalSample,
     EvalSampleReductions,
     sort_samples,
 )
 
+from inspect_fast_loader._construct import construct_sample_fast
 from inspect_fast_loader._native import read_eval_file
+
+SCORER_PLACEHOLDER = "88F74D2C"
 
 # Store original functions so we can restore them
 _originals: dict[str, Any] = {}
@@ -54,13 +57,21 @@ def _detect_format(path: str, format: str) -> str:
 
 
 def _build_eval_log_from_eval_file(raw: dict, path: str, header_only: bool) -> EvalLog:
-    """Build an EvalLog from the dict returned by read_eval_file (Rust .eval reader)."""
+    """Build an EvalLog from the dict returned by read_eval_file (Rust .eval reader).
+
+    For full reads, uses construct_sample_fast to bypass Pydantic model_validate
+    for EvalSample objects. Header-level objects still use model_validate (negligible
+    overhead since they're validated only once per file).
+    """
     header_data = raw["header"]
     has_header_json = raw["has_header_json"]
     ctx = get_deserializing_context()
 
     if has_header_json:
-        # header.json contains a full EvalLog-like structure (minus samples)
+        # header.json contains a full EvalLog-like structure (minus samples).
+        # We strip "samples" to prevent EvalLog.populate_scorer_name_for_samples
+        # from running on header-only data (we handle it ourselves below).
+        header_data.pop("samples", None)
         log = EvalLog.model_validate(header_data, context=ctx)
         log.location = path
     else:
@@ -78,16 +89,32 @@ def _build_eval_log_from_eval_file(raw: dict, path: str, header_only: bool) -> E
         if log.results is not None:
             log.reductions = reductions
 
-    # Samples
+    # Samples — using fast construction (bypasses Pydantic model_validate)
     if not header_only and raw["samples"] is not None:
-        samples = [
-            EvalSample.model_validate(s, context=ctx)
-            for s in raw["samples"]
-        ]
+        samples = [construct_sample_fast(s) for s in raw["samples"]]
         sort_samples(samples)
         log.samples = samples
 
+        # Replicate EvalLog.populate_scorer_name_for_samples (mode="after" validator)
+        # This replaces the "88F74D2C" scorer placeholder with the actual scorer name
+        _populate_scorer_placeholder(log)
+
     return log
+
+
+def _populate_scorer_placeholder(log: EvalLog) -> None:
+    """Replace scorer placeholder key in sample scores with actual scorer name.
+
+    Replicates EvalLog.populate_scorer_name_for_samples which normally runs
+    as a model_validator(mode="after"). Since we construct samples outside of
+    EvalLog.model_validate, we apply this transformation manually.
+    """
+    if not log.samples or not log.results or not log.results.scores:
+        return
+    scorer_name = log.results.scores[0].name
+    for sample in log.samples:
+        if sample.scores and SCORER_PLACEHOLDER in sample.scores:
+            sample.scores[scorer_name] = sample.scores.pop(SCORER_PLACEHOLDER)
 
 
 def _is_bytes_input(log_file: Any) -> bool:
