@@ -34,10 +34,13 @@ FRAGILITY WARNING:
 
 from __future__ import annotations
 
+import warnings
 from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel
+
+SCORER_PLACEHOLDER = "88F74D2C"
 
 from inspect_ai._util.error import EvalError
 from inspect_ai._util.json import JsonChange
@@ -208,12 +211,22 @@ def _fast_construct(cls: type, data: dict) -> Any:
     return obj
 
 
+_warned_content_types: set[str] = set()
+
+
 def _construct_content_item(item: dict) -> Any:
     """Construct a Content item (ContentText, ContentImage, etc.) from a dict."""
     content_type = item.get("type", "text")
     cls = _CONTENT_CLS.get(content_type)
     if cls is not None:
         return _fast_construct(cls, item)
+    if content_type not in _warned_content_types:
+        _warned_content_types.add(content_type)
+        warnings.warn(
+            f"inspect_fast_loader: unknown content type '{content_type}', "
+            f"returning raw dict. Consider upgrading inspect_fast_loader.",
+            stacklevel=2,
+        )
     return item
 
 
@@ -293,7 +306,7 @@ def _construct_model_output(data: dict) -> ModelOutput:
 
     # Replicate ModelOutput.set_completion validator (mode="after")
     if not output.completion and output.choices:
-        output.completion = output.choices[0].message.text if output.choices else ""
+        output.completion = output.choices[0].message.text
 
     return output
 
@@ -305,8 +318,9 @@ def _construct_json_change(data: dict) -> JsonChange:
 def _construct_tool_call(data: dict) -> ToolCall:
     """Construct a ToolCall (pydantic_dataclass) bypassing Pydantic validation.
 
-    ToolCall is a @pydantic_dataclass, so its __init__ runs validation.
-    Direct attribute assignment is ~5x faster.
+    Uses direct attribute assignment instead of _fast_construct because ToolCall
+    is a @pydantic_dataclass (not BaseModel) — it has __dataclass_fields__ instead
+    of model_fields, and its __init__ runs Pydantic validation. ~5x faster.
     """
     tc = object.__new__(ToolCall)
     tc.id = data.get("id", "")
@@ -376,6 +390,9 @@ def _parse_timestamp(ts: Any) -> Any:
     return ts
 
 
+_warned_event_types: set[str] = set()
+
+
 def _construct_event(data: dict) -> Any:
     """Construct an Event from a dict.
 
@@ -388,6 +405,13 @@ def _construct_event(data: dict) -> Any:
 
     cls = _EVENT_CLS.get(event_type)
     if cls is None:
+        if event_type not in _warned_event_types:
+            _warned_event_types.add(event_type)
+            warnings.warn(
+                f"inspect_fast_loader: unknown event type '{event_type}', "
+                f"returning raw dict. Consider upgrading inspect_fast_loader.",
+                stacklevel=2,
+            )
         return data
 
     # Convert timestamp strings to datetime (required by serializer)
@@ -520,7 +544,7 @@ def construct_sample_fast(data: dict) -> EvalSample:
 
     # 1. Convert old "score" field to "scores" dict with placeholder key
     if "score" in data:
-        data["scores"] = {"88F74D2C": data.pop("score")}
+        data["scores"] = {SCORER_PLACEHOLDER: data.pop("score")}
 
     # 2. Convert old "transcript" to "events" + "attachments"
     if "transcript" in data:

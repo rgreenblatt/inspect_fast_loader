@@ -178,7 +178,6 @@ def test_json_loads_nan_inf():
 
 # ---- Rust native function tests ----
 
-_native_available = pytest.importorskip.__module__ is not None  # always True, just for the marker
 try:
     import inspect_fast_loader._native
     _has_native = True

@@ -36,3 +36,4 @@ build/
 *.so
 *.egg-info/
 inspect_ai_repo/
+inspect_fast_loader/target/

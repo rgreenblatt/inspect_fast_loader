@@ -3,7 +3,7 @@ use pyo3::types::{PyBytes, PyDict, PyList};
 use std::io::Read;
 
 // ---------------------------------------------------------------------------
-// Helper: read a ZIP member into raw bytes
+// Helpers
 // ---------------------------------------------------------------------------
 
 fn read_member_bytes(
@@ -33,6 +33,30 @@ fn open_archive(path: &str) -> PyResult<zip::ZipArchive<std::fs::File>> {
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid ZIP file: {e}")))
 }
 
+/// Read header and reductions from an archive. Shared by read_eval_file
+/// and read_header_bytes_from_file.
+fn read_header_and_reductions(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    entry_names: &[String],
+) -> Result<(Vec<u8>, bool, Option<Vec<u8>>), String> {
+    let has_header_json = entry_names.iter().any(|n| n == "header.json");
+
+    let header_name = if has_header_json {
+        "header.json"
+    } else {
+        "_journal/start.json"
+    };
+    let header_bytes = read_member_bytes(archive, header_name)?;
+
+    let reductions_bytes = if entry_names.iter().any(|n| n == "reductions.json") {
+        Some(read_member_bytes(archive, "reductions.json")?)
+    } else {
+        None
+    };
+
+    Ok((header_bytes, has_header_json, reductions_bytes))
+}
+
 // ---------------------------------------------------------------------------
 // Exported functions
 // ---------------------------------------------------------------------------
@@ -50,35 +74,21 @@ fn open_archive(path: &str) -> PyResult<zip::ZipArchive<std::fs::File>> {
 #[pyo3(signature = (path, header_only=false))]
 fn read_eval_file(py: Python<'_>, path: &str, header_only: bool) -> PyResult<PyObject> {
     let mut archive = open_archive(path)?;
+    let entry_names: Vec<String> = archive.file_names().map(|s| s.to_string()).collect();
+
+    let (header_bytes, has_header_json, reductions_bytes) =
+        read_header_and_reductions(&mut archive, &entry_names)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyKeyError, _>(e))?;
 
     let result = PyDict::new(py);
-
-    // Collect entry names
-    let entry_names: Vec<String> = archive.file_names().map(|s| s.to_string()).collect();
-    let has_header_json = entry_names.iter().any(|n| n == "header.json");
-
     result.set_item("has_header_json", has_header_json)?;
-
-    // Read header
-    let header_name = if has_header_json {
-        "header.json"
-    } else {
-        "_journal/start.json"
-    };
-    let header_bytes = read_member_bytes(&mut archive, header_name)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyKeyError, _>(e))?;
     result.set_item("header", PyBytes::new(py, &header_bytes))?;
 
-    // Read reductions if present
-    if entry_names.iter().any(|n| n == "reductions.json") {
-        let reductions_bytes = read_member_bytes(&mut archive, "reductions.json")
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e))?;
-        result.set_item("reductions", PyBytes::new(py, &reductions_bytes))?;
-    } else {
-        result.set_item("reductions", py.None())?;
+    match reductions_bytes {
+        Some(bytes) => result.set_item("reductions", PyBytes::new(py, &bytes))?,
+        None => result.set_item("reductions", py.None())?,
     }
 
-    // Read samples (unless header_only)
     if header_only {
         result.set_item("samples", py.None())?;
     } else {
@@ -94,7 +104,6 @@ fn read_eval_file(py: Python<'_>, path: &str, header_only: bool) -> PyResult<PyO
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e))?;
             samples_list.append(PyBytes::new(py, &bytes))?;
         }
-
         result.set_item("samples", samples_list)?;
     }
 
@@ -102,26 +111,28 @@ fn read_eval_file(py: Python<'_>, path: &str, header_only: bool) -> PyResult<PyO
 }
 
 /// Read headers from multiple .eval files in parallel using rayon.
-///
-/// Takes a list of file paths and returns a list of dicts, each with:
-///   {header: bytes, samples: None, reductions: bytes|None, has_header_json: bool}
-///
-/// Uses rayon for true OS-level thread parallelism for ZIP decompression.
 #[pyfunction]
 fn read_eval_headers_batch(py: Python<'_>, paths: Vec<String>) -> PyResult<PyObject> {
-    // Step 1: Read all headers in parallel (release GIL)
-    let raw_results: Vec<Result<HeaderBytesResult, String>> = py.allow_threads(|| {
-        use rayon::prelude::*;
-        paths
-            .par_iter()
-            .map(|path| read_header_bytes_from_file(path))
-            .collect()
-    });
+    let raw_results: Vec<Result<(Vec<u8>, bool, Option<Vec<u8>>), String>> =
+        py.allow_threads(|| {
+            use rayon::prelude::*;
+            paths
+                .par_iter()
+                .map(|path| {
+                    let file = std::fs::File::open(path)
+                        .map_err(|e| format!("Failed to open {path}: {e}"))?;
+                    let mut archive = zip::ZipArchive::new(file)
+                        .map_err(|e| format!("Invalid ZIP {path}: {e}"))?;
+                    let entry_names: Vec<String> =
+                        archive.file_names().map(|s| s.to_string()).collect();
+                    read_header_and_reductions(&mut archive, &entry_names)
+                })
+                .collect()
+        });
 
-    // Step 2: Convert to Python objects (needs GIL)
     let result_list = PyList::empty(py);
     for (i, raw) in raw_results.into_iter().enumerate() {
-        let hr = raw.map_err(|e| {
+        let (header_bytes, has_header_json, reductions_bytes) = raw.map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
                 "Error reading {}: {e}",
                 paths[i]
@@ -129,14 +140,13 @@ fn read_eval_headers_batch(py: Python<'_>, paths: Vec<String>) -> PyResult<PyObj
         })?;
 
         let dict = PyDict::new(py);
-        dict.set_item("header", PyBytes::new(py, &hr.header_bytes))?;
+        dict.set_item("header", PyBytes::new(py, &header_bytes))?;
         dict.set_item("samples", py.None())?;
-        dict.set_item("has_header_json", hr.has_header_json)?;
+        dict.set_item("has_header_json", has_header_json)?;
 
-        if let Some(red_bytes) = hr.reductions_bytes {
-            dict.set_item("reductions", PyBytes::new(py, &red_bytes))?;
-        } else {
-            dict.set_item("reductions", py.None())?;
+        match reductions_bytes {
+            Some(bytes) => dict.set_item("reductions", PyBytes::new(py, &bytes))?,
+            None => dict.set_item("reductions", py.None())?,
         }
 
         result_list.append(dict)?;
@@ -145,45 +155,7 @@ fn read_eval_headers_batch(py: Python<'_>, paths: Vec<String>) -> PyResult<PyObj
     Ok(result_list.into_any().unbind())
 }
 
-struct HeaderBytesResult {
-    header_bytes: Vec<u8>,
-    has_header_json: bool,
-    reductions_bytes: Option<Vec<u8>>,
-}
-
-fn read_header_bytes_from_file(path: &str) -> Result<HeaderBytesResult, String> {
-    let file =
-        std::fs::File::open(path).map_err(|e| format!("Failed to open {path}: {e}"))?;
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("Invalid ZIP {path}: {e}"))?;
-
-    let entry_names: Vec<String> = archive.file_names().map(|s| s.to_string()).collect();
-    let has_header_json = entry_names.iter().any(|n| n == "header.json");
-
-    let header_name = if has_header_json {
-        "header.json"
-    } else {
-        "_journal/start.json"
-    };
-    let header_bytes = read_member_bytes(&mut archive, header_name)?;
-
-    let reductions_bytes = if entry_names.iter().any(|n| n == "reductions.json") {
-        Some(read_member_bytes(&mut archive, "reductions.json")?)
-    } else {
-        None
-    };
-
-    Ok(HeaderBytesResult {
-        header_bytes,
-        has_header_json,
-        reductions_bytes,
-    })
-}
-
 /// Read a single sample from an .eval ZIP file by its entry name.
-///
-/// Returns the raw JSON bytes. The entry_name should be
-/// e.g. "samples/1_epoch_1.json".
 #[pyfunction]
 fn read_eval_sample(py: Python<'_>, path: &str, entry_name: &str) -> PyResult<PyObject> {
     let mut archive = open_archive(path)?;
@@ -193,13 +165,9 @@ fn read_eval_sample(py: Python<'_>, path: &str, entry_name: &str) -> PyResult<Py
 }
 
 /// Read summaries from an .eval ZIP file.
-///
-/// Returns the raw JSON bytes of the summaries (from summaries.json,
-/// or concatenated from _journal/summaries/*.json entries).
 #[pyfunction]
 fn read_eval_summaries(py: Python<'_>, path: &str) -> PyResult<PyObject> {
     let mut archive = open_archive(path)?;
-
     let entry_names: Vec<String> = archive.file_names().map(|s| s.to_string()).collect();
 
     if entry_names.iter().any(|n| n == "summaries.json") {
@@ -208,13 +176,12 @@ fn read_eval_summaries(py: Python<'_>, path: &str) -> PyResult<PyObject> {
         return Ok(PyBytes::new(py, &bytes).into_any().unbind());
     }
 
-    // Fall back to _journal/summaries/*.json — return list of raw byte chunks
-    let mut journal_summary_names: Vec<String> = entry_names
+    let mut journal_names: Vec<String> = entry_names
         .iter()
         .filter(|n| n.starts_with("_journal/summaries/") && n.ends_with(".json"))
         .cloned()
         .collect();
-    journal_summary_names.sort_by_key(|n| {
+    journal_names.sort_by_key(|n| {
         n.split('/')
             .last()
             .and_then(|f| f.strip_suffix(".json"))
@@ -223,7 +190,7 @@ fn read_eval_summaries(py: Python<'_>, path: &str) -> PyResult<PyObject> {
     });
 
     let chunks = PyList::empty(py);
-    for name in &journal_summary_names {
+    for name in &journal_names {
         let bytes = read_member_bytes(&mut archive, name)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e))?;
         chunks.append(PyBytes::new(py, &bytes))?;

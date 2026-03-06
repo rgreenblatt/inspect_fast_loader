@@ -25,14 +25,22 @@ except ImportError:
 # Pure Python fallback implementations
 # ---------------------------------------------------------------------------
 
-def _py_read_eval_file(path: str, header_only: bool = False) -> dict:
+def _open_zip(path: str) -> zipfile.ZipFile:
+    """Open a ZIP file, raising clear errors for common failure modes."""
     try:
-        zf = zipfile.ZipFile(path)
+        return zipfile.ZipFile(path)
     except FileNotFoundError:
         raise
-    except Exception as e:
+    except IsADirectoryError:
+        raise
+    except PermissionError:
+        raise
+    except zipfile.BadZipFile as e:
         raise ValueError(f"Invalid ZIP file: {e}") from e
-    with zf:
+
+
+def _py_read_eval_file(path: str, header_only: bool = False) -> dict:
+    with _open_zip(path) as zf:
         names = zf.namelist()
         has_header_json = "header.json" in names
 
@@ -61,24 +69,12 @@ def _py_read_eval_headers_batch(paths: list[str]) -> list[dict]:
 
 
 def _py_read_eval_sample(path: str, entry_name: str) -> dict:
-    try:
-        zf = zipfile.ZipFile(path)
-    except FileNotFoundError:
-        raise
-    except Exception as e:
-        raise ValueError(f"Invalid ZIP file: {e}") from e
-    with zf:
+    with _open_zip(path) as zf:
         return json.loads(zf.read(entry_name))
 
 
 def _py_read_eval_summaries(path: str) -> list[dict]:
-    try:
-        zf = zipfile.ZipFile(path)
-    except FileNotFoundError:
-        raise
-    except Exception as e:
-        raise ValueError(f"Invalid ZIP file: {e}") from e
-    with zf:
+    with _open_zip(path) as zf:
         names = zf.namelist()
 
         if "summaries.json" in names:

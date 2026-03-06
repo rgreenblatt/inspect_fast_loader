@@ -31,15 +31,13 @@ from inspect_ai.log._log import (
     sort_samples,
 )
 
-from inspect_fast_loader._construct import construct_sample_fast
+from inspect_fast_loader._construct import construct_sample_fast, SCORER_PLACEHOLDER
 from inspect_fast_loader._zip import (
     read_eval_file,
     read_eval_headers_batch,
     read_eval_sample as _read_eval_sample,
     read_eval_summaries as _read_eval_summaries,
 )
-
-SCORER_PLACEHOLDER = "88F74D2C"
 _SENTINEL = object()
 
 # Store original functions so we can restore them
@@ -59,10 +57,10 @@ def _resolve_path(log_file: str | Path | EvalLogInfo) -> str:
         raise TypeError(f"Unexpected log_file type: {type(log_file)}")
 
 
-def _detect_format(path: str, format: str) -> str:
-    """Detect log format from file extension or explicit format."""
-    if format != "auto":
-        return format
+def _detect_format(path: str, fmt: str) -> str:
+    """Detect log format from file extension or explicit format string."""
+    if fmt != "auto":
+        return fmt
     if path.endswith(".eval"):
         return "eval"
     elif path.endswith(".json"):
