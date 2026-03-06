@@ -1,6 +1,149 @@
-"""Shared test utilities for deep comparison of log data structures."""
+"""Shared test utilities for inspect_fast_loader tests."""
 
+import json
 import math
+import tempfile
+import zipfile
+from pathlib import Path
+
+from inspect_fast_loader._native import (
+    read_eval_file as _read_eval_file_raw,
+    read_eval_headers_batch as _read_eval_headers_batch_raw,
+    read_eval_sample as _read_eval_sample_raw,
+    read_eval_summaries as _read_eval_summaries_raw,
+)
+
+TEST_LOG_DIR = Path(__file__).parent.parent.parent / "test_logs"
+
+
+# -- Wrappers around native Rust functions that json.loads the raw bytes --
+
+def read_eval_file(path: str, **kwargs) -> dict:
+    raw = _read_eval_file_raw(path, **kwargs)
+    return {
+        "has_header_json": raw["has_header_json"],
+        "header": json.loads(raw["header"]),
+        "reductions": json.loads(raw["reductions"]) if raw["reductions"] is not None else None,
+        "samples": [json.loads(s) for s in raw["samples"]] if raw["samples"] is not None else None,
+    }
+
+
+def read_eval_sample(path: str, entry_name: str) -> dict:
+    return json.loads(_read_eval_sample_raw(path, entry_name))
+
+
+def read_eval_summaries(path: str) -> list:
+    raw = _read_eval_summaries_raw(path)
+    if isinstance(raw, bytes):
+        return json.loads(raw)
+    result = []
+    for chunk in raw:
+        result.extend(json.loads(chunk))
+    return result
+
+
+def read_eval_headers_batch(paths: list[str]) -> list[dict]:
+    raw_results = _read_eval_headers_batch_raw(paths)
+    return [
+        {
+            "header": json.loads(r["header"]),
+            "samples": None,
+            "has_header_json": r["has_header_json"],
+            "reductions": json.loads(r["reductions"]) if r["reductions"] is not None else None,
+        }
+        for r in raw_results
+    ]
+
+
+# -- Minimal .eval ZIP builder for tests --
+
+def make_minimal_eval_zip(
+    samples: list[dict] | None = None,
+    header: dict | None = None,
+    summaries: list[dict] | None = None,
+    include_header_json: bool = True,
+    extra_entries: dict[str, bytes] | None = None,
+    reductions: list[dict] | None = None,
+    sample_ids: list | None = None,
+) -> str:
+    """Create a minimal .eval ZIP file in a temp file. Caller must os.unlink() the result."""
+    if header is None:
+        header = {
+            "version": 3,
+            "status": "success",
+            "eval": {
+                "task": "test_task",
+                "task_version": 0,
+                "task_file": None,
+                "task_id": "test_task",
+                "run_id": "test_run",
+                "created": "2024-01-01T00:00:00+00:00",
+                "dataset": {
+                    "name": "test", "location": "test", "samples": 1, "shuffled": False,
+                    "sample_ids": sample_ids if sample_ids is not None else [1],
+                },
+                "model": "openai/gpt-4o",
+                "model_base_url": None,
+                "task_attribs": {},
+                "task_args": {},
+                "model_args": {},
+                "config": {"epochs": 1},
+                "revision": None,
+                "packages": {},
+                "metadata": None,
+                "sandbox": None,
+                "model_roles": None,
+            },
+            "plan": {"name": "plan", "steps": [], "config": {}, "finish": None},
+            "results": {
+                "scores": [{"name": "accuracy", "scorer": "accuracy", "params": {}, "metrics": {}}],
+                "total_samples": 1,
+                "completed_samples": 1,
+            },
+            "stats": {"started_at": "2024-01-01T00:00:00+00:00", "completed_at": "2024-01-01T00:01:00+00:00"},
+        }
+
+    if samples is None:
+        samples = [{
+            "id": 1, "epoch": 1,
+            "input": "test input",
+            "target": "A",
+            "messages": [],
+            "output": {
+                "model": "openai/gpt-4o",
+                "choices": [{"message": {"role": "assistant", "content": "A"}, "stop_reason": "stop"}],
+                "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            },
+            "scores": {"accuracy": {"value": "C", "answer": "A"}},
+        }]
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".eval", delete=False)
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+        if include_header_json:
+            zf.writestr("header.json", json.dumps(header))
+        else:
+            start_data = {
+                "version": header.get("version", 3),
+                "eval": header["eval"],
+                "plan": header["plan"],
+            }
+            zf.writestr("_journal/start.json", json.dumps(start_data))
+
+        for s in samples:
+            zf.writestr(f"samples/{s['id']}_epoch_{s['epoch']}.json", json.dumps(s))
+
+        if summaries is not None:
+            zf.writestr("summaries.json", json.dumps(summaries))
+
+        if reductions is not None:
+            zf.writestr("reductions.json", json.dumps(reductions))
+
+        if extra_entries:
+            for name, data in extra_entries.items():
+                zf.writestr(name, data)
+
+    tmp.close()
+    return tmp.name
 
 
 def approx_equal(a, b, rel_tol=1e-9, abs_tol=1e-12):

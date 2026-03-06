@@ -25,8 +25,9 @@ credentials.json
 credentials.yaml
 credentials.yml
 
-# Test artifacts
+# Test/benchmark artifacts
 test_logs/
+results/
 .pytest_cache/
 
 # Rust build artifacts

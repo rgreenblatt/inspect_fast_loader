@@ -1,40 +1,34 @@
-"""Correctness tests comparing Rust-accelerated output vs Python original output.
+"""Correctness tests comparing fast (patched) output vs original Python output.
 
 For every test log file, reads with both the original Python implementation and
-the Rust-accelerated (patched) implementation, then compares all fields.
+the patched implementation, then compares all fields.
 """
 
 import asyncio
 import math
 import os
-from pathlib import Path
 
 import pytest
 
 from inspect_ai.log._file import read_eval_log, read_eval_log_headers
 from inspect_fast_loader import patch, unpatch
 
-from helpers import assert_logs_equal
-
-TEST_LOGS_DIR = Path(__file__).parent.parent.parent / "test_logs"
+from helpers import assert_logs_equal, TEST_LOG_DIR
 
 
 @pytest.fixture(autouse=True)
 def _ensure_unpatched():
-    """Ensure we start and end each test unpatched."""
     unpatch()
     yield
     unpatch()
 
 
 def _read_original(path: str, header_only: bool = False):
-    """Read using original Python implementation."""
     unpatch()
     return read_eval_log(path, header_only=header_only)
 
 
 def _read_fast(path: str, header_only: bool = False):
-    """Read using Rust-accelerated implementation."""
     patch()
     result = read_eval_log(path, header_only=header_only)
     unpatch()
@@ -43,7 +37,7 @@ def _read_fast(path: str, header_only: bool = False):
 
 # ---- Full read tests ----
 
-@pytest.mark.parametrize("name", [
+TEST_LOG_NAMES = [
     "test_10samples",
     "test_100samples",
     "test_1000samples",
@@ -53,93 +47,70 @@ def _read_fast(path: str, header_only: bool = False):
     "test_nan_inf",
     "test_attachments",
     "test_empty",
-])
+]
+
+
+@pytest.mark.parametrize("name", TEST_LOG_NAMES)
 def test_correctness_full_read_json(name):
-    """Full read of .json files: Rust-accelerated should match original."""
-    path = str(TEST_LOGS_DIR / f"{name}.json")
+    path = str(TEST_LOG_DIR / f"{name}.json")
     if not os.path.exists(path):
         pytest.skip(f"Test file not found: {path}")
-
-    orig = _read_original(path)
-    fast = _read_fast(path)
-    assert_logs_equal(orig, fast)
+    assert_logs_equal(_read_original(path), _read_fast(path))
 
 
-@pytest.mark.parametrize("name", [
-    "test_10samples",
-    "test_100samples",
-    "test_1000samples",
-    "test_multiepoch",
-    "test_error",
-    "test_cancelled",
-    "test_nan_inf",
-    "test_attachments",
-    "test_empty",
-])
+@pytest.mark.parametrize("name", TEST_LOG_NAMES)
 def test_correctness_full_read_eval(name):
-    """Full read of .eval files: Rust-accelerated should match original."""
-    path = str(TEST_LOGS_DIR / f"{name}.eval")
+    path = str(TEST_LOG_DIR / f"{name}.eval")
     if not os.path.exists(path):
         pytest.skip(f"Test file not found: {path}")
-
-    orig = _read_original(path)
-    fast = _read_fast(path)
-    assert_logs_equal(orig, fast)
+    assert_logs_equal(_read_original(path), _read_fast(path))
 
 
 # ---- Header-only tests ----
 
-@pytest.mark.parametrize("name", [
+HEADER_LOG_NAMES = [
     "test_10samples",
     "test_100samples",
     "test_multiepoch",
     "test_error",
     "test_cancelled",
     "test_nan_inf",
-])
+]
+
+
+@pytest.mark.parametrize("name", HEADER_LOG_NAMES)
 def test_correctness_header_only_json(name):
-    """Header-only read of .json files should match."""
-    path = str(TEST_LOGS_DIR / f"{name}.json")
+    path = str(TEST_LOG_DIR / f"{name}.json")
     if not os.path.exists(path):
         pytest.skip(f"Test file not found: {path}")
 
-    # The original Python _read_header_streaming crashes on error/cancelled
-    # .json logs when results=null (upstream bug). Since our fast path falls
-    # back to the original for header-only .json, both will fail.
+    # inspect_ai's _read_header_streaming crashes on error/cancelled .json logs
+    # when results=null (upstream bug). Since our fast path falls back to the
+    # original for header-only .json, both will fail the same way.
     try:
         orig = _read_original(path, header_only=True)
     except TypeError:
-        # Known upstream bug: _read_header_streaming crashes when results=null.
         # Verify full-read works correctly for this log instead.
-        orig_full = _read_original(path, header_only=False)
-        fast_full = _read_fast(path, header_only=False)
-        assert_logs_equal(orig_full, fast_full)
+        assert_logs_equal(
+            _read_original(path, header_only=False),
+            _read_fast(path, header_only=False),
+        )
         return
 
     fast = _read_fast(path, header_only=True)
-
     assert orig.samples is None
     assert fast.samples is None
     assert_logs_equal(orig, fast)
 
 
-@pytest.mark.parametrize("name", [
-    "test_10samples",
-    "test_100samples",
-    "test_multiepoch",
-    "test_error",
-    "test_cancelled",
-    "test_nan_inf",
-])
+@pytest.mark.parametrize("name", HEADER_LOG_NAMES)
 def test_correctness_header_only_eval(name):
-    """Header-only read of .eval files should match."""
-    path = str(TEST_LOGS_DIR / f"{name}.eval")
+    path = str(TEST_LOG_DIR / f"{name}.eval")
     if not os.path.exists(path):
         pytest.skip(f"Test file not found: {path}")
 
     orig = _read_original(path, header_only=True)
     fast = _read_fast(path, header_only=True)
-
     assert orig.samples is None
     assert fast.samples is None
     assert_logs_equal(orig, fast)
@@ -148,18 +119,15 @@ def test_correctness_header_only_eval(name):
 # ---- Batch header tests ----
 
 def test_correctness_batch_headers():
-    """Batch header reading should match for multiple files."""
-    batch_files = sorted(TEST_LOGS_DIR.glob("batch_*.eval"))[:10]
+    batch_files = sorted(TEST_LOG_DIR.glob("batch_*.eval"))[:10]
     if not batch_files:
         pytest.skip("No batch test files found")
 
     paths = [str(f) for f in batch_files]
 
-    # Read with original
     unpatch()
     orig_headers = read_eval_log_headers(paths)
 
-    # Read with fast
     patch()
     fast_headers = read_eval_log_headers(paths)
     unpatch()
@@ -173,7 +141,7 @@ def test_correctness_batch_headers():
 
 def test_sample_ordering_preserved():
     """Samples should be in the same order (sorted by epoch, id)."""
-    path = str(TEST_LOGS_DIR / "test_multiepoch.eval")
+    path = str(TEST_LOG_DIR / "test_multiepoch.eval")
     if not os.path.exists(path):
         pytest.skip("Multiepoch test file not found")
 
@@ -188,22 +156,14 @@ def test_sample_ordering_preserved():
         assert o.epoch == f.epoch, f"Sample {i}: epoch mismatch {o.epoch} vs {f.epoch}"
 
 
-# ---- NaN/Inf specific tests ----
+# ---- NaN/Inf tests ----
 
 def test_nan_inf_values_preserved():
-    """NaN and Inf values in score metadata should be preserved."""
-    path = str(TEST_LOGS_DIR / "test_nan_inf.json")
+    path = str(TEST_LOG_DIR / "test_nan_inf.json")
     if not os.path.exists(path):
         pytest.skip("NaN/Inf test file not found")
+    assert_logs_equal(_read_original(path), _read_fast(path))
 
-    orig = _read_original(path)
-    fast = _read_fast(path)
-
-    assert orig.samples is not None and fast.samples is not None
-    assert_logs_equal(orig, fast)
-
-
-# ---- NaN/Inf tests (json.loads handles these natively) ----
 
 def test_json_loads_nan_inf():
     """Python json.loads handles NaN/Inf natively."""
@@ -219,11 +179,10 @@ def test_json_loads_nan_inf():
 # ---- Rust native function tests ----
 
 def test_read_eval_file_basic():
-    """Rust read_eval_file should return raw bytes structure."""
     from inspect_fast_loader._native import read_eval_file
     import json
 
-    path = str(TEST_LOGS_DIR / "test_10samples.eval")
+    path = str(TEST_LOG_DIR / "test_10samples.eval")
     result = read_eval_file(path)
 
     assert isinstance(result, dict)
@@ -233,24 +192,20 @@ def test_read_eval_file_basic():
     assert isinstance(header, dict)
     assert isinstance(result["samples"], list)
     assert len(result["samples"]) == 10
-    # Each sample is raw bytes
     sample0 = json.loads(result["samples"][0])
     assert isinstance(sample0, dict)
 
 
 def test_read_eval_file_header_only():
-    """Rust read_eval_file with header_only should not read samples."""
     from inspect_fast_loader._native import read_eval_file
 
-    path = str(TEST_LOGS_DIR / "test_10samples.eval")
+    path = str(TEST_LOG_DIR / "test_10samples.eval")
     result = read_eval_file(path, header_only=True)
-
     assert result["samples"] is None
     assert result["header"] is not None
 
 
 def test_read_eval_file_not_found():
-    """Rust read_eval_file should raise FileNotFoundError."""
     from inspect_fast_loader._native import read_eval_file
 
     with pytest.raises(FileNotFoundError):
@@ -260,8 +215,7 @@ def test_read_eval_file_not_found():
 # ---- Async tests ----
 
 def test_async_read_json():
-    """Async read should work and match sync."""
-    path = str(TEST_LOGS_DIR / "test_10samples.json")
+    path = str(TEST_LOG_DIR / "test_10samples.json")
 
     patch()
     sync_log = read_eval_log(path)
@@ -272,13 +226,11 @@ def test_async_read_json():
 
     async_log = asyncio.run(_read())
     unpatch()
-
     assert_logs_equal(sync_log, async_log)
 
 
 def test_async_read_eval():
-    """Async read should work and match sync."""
-    path = str(TEST_LOGS_DIR / "test_10samples.eval")
+    path = str(TEST_LOG_DIR / "test_10samples.eval")
 
     patch()
     sync_log = read_eval_log(path)
@@ -289,18 +241,14 @@ def test_async_read_eval():
 
     async_log = asyncio.run(_read())
     unpatch()
-
     assert_logs_equal(sync_log, async_log)
 
 
-# ---- Tests that exercise the patched function via module attribute ----
-# These ensure the sync fallback path works when the function is called
-# via the module (as real callers would), not via a pre-patching import.
+# ---- Tests exercising patched functions via module attribute ----
 
 def test_patched_sync_json_via_module():
-    """Sync .json read via module attribute should work after patching."""
     import inspect_ai.log._file as fm
-    path = str(TEST_LOGS_DIR / "test_10samples.json")
+    path = str(TEST_LOG_DIR / "test_10samples.json")
 
     patch()
     try:
@@ -313,9 +261,8 @@ def test_patched_sync_json_via_module():
 
 
 def test_patched_sync_eval_header_only_via_module():
-    """Sync header-only .eval read via module attribute should work."""
     import inspect_ai.log._file as fm
-    path = str(TEST_LOGS_DIR / "test_10samples.eval")
+    path = str(TEST_LOG_DIR / "test_10samples.eval")
 
     patch()
     try:
@@ -327,9 +274,8 @@ def test_patched_sync_eval_header_only_via_module():
 
 
 def test_patched_sync_eval_full_via_module():
-    """Sync full .eval read via module attribute should work."""
     import inspect_ai.log._file as fm
-    path = str(TEST_LOGS_DIR / "test_10samples.eval")
+    path = str(TEST_LOG_DIR / "test_10samples.eval")
 
     patch()
     try:
@@ -342,9 +288,8 @@ def test_patched_sync_eval_full_via_module():
 
 
 def test_patched_batch_headers_via_module():
-    """Batch header reading via module attribute should work."""
     import inspect_ai.log._file as fm
-    batch_files = sorted(TEST_LOGS_DIR.glob("batch_*.eval"))[:5]
+    batch_files = sorted(TEST_LOG_DIR.glob("batch_*.eval"))[:5]
     if not batch_files:
         pytest.skip("No batch test files found")
 
@@ -360,11 +305,10 @@ def test_patched_batch_headers_via_module():
         unpatch()
 
 
-# ---- Additional edge case tests (from Branch 2) ----
+# ---- Location and fallback tests ----
 
 def test_location_set_correctly_eval():
-    """Test that log.location is set correctly for .eval files."""
-    path = str(TEST_LOGS_DIR / "test_10samples.eval")
+    path = str(TEST_LOG_DIR / "test_10samples.eval")
     orig = _read_original(path)
     fast = _read_fast(path)
     assert fast.location == path
@@ -372,8 +316,7 @@ def test_location_set_correctly_eval():
 
 
 def test_location_set_correctly_json():
-    """Test that log.location is set correctly for .json files."""
-    path = str(TEST_LOGS_DIR / "test_10samples.json")
+    path = str(TEST_LOG_DIR / "test_10samples.json")
     orig = _read_original(path)
     fast = _read_fast(path)
     assert fast.location == path
@@ -381,10 +324,10 @@ def test_location_set_correctly_json():
 
 
 def test_bytes_input_fallback_json():
-    """Test that IO[bytes] input falls back to original for .json."""
+    """IO[bytes] input falls back to original implementation."""
     patch()
     try:
-        with open(TEST_LOGS_DIR / "test_10samples.json", "rb") as f:
+        with open(TEST_LOG_DIR / "test_10samples.json", "rb") as f:
             log = read_eval_log(f)
             assert log.status == "success"
             assert log.samples is not None
@@ -394,10 +337,10 @@ def test_bytes_input_fallback_json():
 
 
 def test_bytes_input_fallback_eval():
-    """Test that IO[bytes] input falls back to original for .eval."""
+    """IO[bytes] input falls back to original implementation."""
     patch()
     try:
-        with open(TEST_LOGS_DIR / "test_10samples.eval", "rb") as f:
+        with open(TEST_LOG_DIR / "test_10samples.eval", "rb") as f:
             log = read_eval_log(f)
             assert log.status == "success"
             assert log.samples is not None
@@ -407,9 +350,8 @@ def test_bytes_input_fallback_eval():
 
 
 def test_format_auto_detection():
-    """Test auto-detection works for both formats."""
     for ext in [".eval", ".json"]:
-        fast = _read_fast(str(TEST_LOGS_DIR / f"test_10samples{ext}"))
+        fast = _read_fast(str(TEST_LOG_DIR / f"test_10samples{ext}"))
         assert fast.status == "success"
         assert fast.samples is not None
         assert len(fast.samples) == 10

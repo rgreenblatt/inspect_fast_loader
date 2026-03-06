@@ -1,16 +1,12 @@
 """Tests for the test log generator and log loading via inspect's Python API."""
 
 import os
-import sys
+import random
+import tempfile
 
 import pytest
 
-# Add project root to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-
-from generate_test_logs import generate_all_test_logs, generate_log, write_eval_log, write_json_log
-import random
-import tempfile
+from generate_test_logs import generate_all_test_logs, generate_log
 
 
 @pytest.fixture(scope="module")
