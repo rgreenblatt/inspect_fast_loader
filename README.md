@@ -16,6 +16,18 @@ To install Rust (optional): https://rustup.rs
 
 ## Usage
 
+### CLI
+
+The package installs a `fast-inspect` command — a drop-in replacement for `inspect` with the fast loader pre-applied:
+
+```bash
+fast-inspect log dump mylog.eval
+fast-inspect eval-retry mylog.eval
+fast-inspect eval-set ...
+```
+
+### Python API
+
 ```python
 import inspect_fast_loader
 
@@ -23,8 +35,6 @@ inspect_fast_loader.patch()   # monkey-patches inspect_ai.log._file functions
 # ... use inspect_ai as normal — log reads are now accelerated ...
 inspect_fast_loader.unpatch() # restore originals (optional)
 ```
-
-Nine functions are patched: `read_eval_log`, `read_eval_log_async`, `read_eval_log_headers`, `read_eval_log_headers_async`, `read_eval_log_sample`, `read_eval_log_sample_async`, `read_eval_log_sample_summaries`, `read_eval_log_sample_summaries_async`, and `read_eval_log_samples`.
 
 ## Performance
 
