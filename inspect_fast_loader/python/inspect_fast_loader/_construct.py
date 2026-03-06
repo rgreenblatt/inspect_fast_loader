@@ -40,23 +40,14 @@ from typing import Any
 from pydantic import BaseModel
 
 from inspect_ai._util.error import EvalError
-from inspect_ai.log._log import EvalSample, EvalSampleLimit
-from inspect_ai.model._chat_message import (
-    ChatMessageAssistant,
-    ChatMessageSystem,
-    ChatMessageTool,
-    ChatMessageUser,
-)
-from inspect_ai.model._model_output import ChatCompletionChoice, ModelOutput, ModelUsage
-from inspect_ai.scorer._metric import Score
-
-# Import all event types eagerly (once at module load)
+from inspect_ai._util.json import JsonChange
+from inspect_ai.dataset._dataset import Sample
 from inspect_ai.event._approval import ApprovalEvent
 from inspect_ai.event._compaction import CompactionEvent
 from inspect_ai.event._error import ErrorEvent
 from inspect_ai.event._info import InfoEvent
 from inspect_ai.event._input import InputEvent
-from inspect_ai.event._logger import LoggerEvent
+from inspect_ai.event._logger import LoggerEvent, LoggingMessage
 from inspect_ai.event._model import ModelEvent
 from inspect_ai.event._sample_init import SampleInitEvent
 from inspect_ai.event._sample_limit import SampleLimitEvent
@@ -69,6 +60,22 @@ from inspect_ai.event._step import StepEvent
 from inspect_ai.event._store import StoreEvent
 from inspect_ai.event._subtask import SubtaskEvent
 from inspect_ai.event._tool import ToolEvent
+from inspect_ai.log._edit import ProvenanceData
+from inspect_ai.log._log import EvalSample, EvalSampleLimit
+from inspect_ai.model._chat_message import (
+    ChatMessageAssistant,
+    ChatMessageSystem,
+    ChatMessageTool,
+    ChatMessageUser,
+)
+from inspect_ai.model._generate_config import GenerateConfig
+from inspect_ai.model._model_call import ModelCall
+from inspect_ai.model._model_output import ChatCompletionChoice, ModelOutput, ModelUsage
+from inspect_ai.scorer._metric import Score, ScoreEdit
+from inspect_ai.tool._tool_call import ToolCall, ToolCallContent, ToolCallError, ToolCallView
+from inspect_ai.tool._tool_choice import ToolFunction
+from inspect_ai.tool._tool_info import ToolInfo
+from inspect_ai.tool._tool_params import ToolParams
 
 from inspect_ai._util.content import (
     ContentAudio,
@@ -276,15 +283,6 @@ def _construct_model_output(data: dict) -> ModelOutput:
     return output
 
 
-from inspect_ai._util.json import JsonChange
-from inspect_ai.model._generate_config import GenerateConfig
-from inspect_ai.model._model_call import ModelCall
-from inspect_ai.tool._tool_call import ToolCall, ToolCallContent, ToolCallError, ToolCallView
-from inspect_ai.tool._tool_info import ToolInfo
-from inspect_ai.tool._tool_choice import ToolFunction
-from inspect_ai.scorer._metric import ScoreEdit
-
-
 def _construct_json_change(data: dict) -> JsonChange:
     return _fast_construct(JsonChange, data)
 
@@ -326,14 +324,12 @@ def _construct_logging_message(data: dict) -> Any:
     level = data.get("level")
     if level in ("tools", "sandbox"):
         data["level"] = "trace"
-    from inspect_ai.event._logger import LoggingMessage
     return _fast_construct(LoggingMessage, data)
 
 
 def _construct_tool_info(data: dict) -> ToolInfo:
     """Construct a ToolInfo (BaseModel) from a dict."""
     if "parameters" in data and isinstance(data["parameters"], dict):
-        from inspect_ai.tool._tool_params import ToolParams
         data["parameters"] = _fast_construct(ToolParams, data["parameters"])
     return _fast_construct(ToolInfo, data)
 
@@ -345,7 +341,6 @@ def _construct_model_call(data: dict) -> ModelCall:
 def _construct_score_edit(data: dict) -> ScoreEdit:
     """Construct a ScoreEdit (BaseModel) from a dict."""
     if "provenance" in data and isinstance(data["provenance"], dict):
-        from inspect_ai.log._edit import ProvenanceData
         data["provenance"] = _fast_construct(ProvenanceData, data["provenance"])
     return _fast_construct(ScoreEdit, data)
 
@@ -413,6 +408,15 @@ def _construct_event(data: dict) -> Any:
             data["error"] = _construct_tool_call_error(data["error"])
         if "view" in data and isinstance(data["view"], dict):
             data["view"] = _construct_tool_call_content(data["view"])
+        # result can be a content type dict or list of content type dicts
+        result = data.get("result")
+        if isinstance(result, dict) and "type" in result:
+            data["result"] = _construct_content_item(result)
+        elif isinstance(result, list):
+            data["result"] = [
+                _construct_content_item(item) if isinstance(item, dict) else item
+                for item in result
+            ]
     elif event_type == "approval":
         if "call" in data and isinstance(data["call"], dict):
             data["call"] = _construct_tool_call(data["call"])
@@ -444,7 +448,6 @@ def _construct_event(data: dict) -> Any:
             data["message"] = _construct_logging_message(data["message"])
     elif event_type == "sample_init":
         if "sample" in data and isinstance(data["sample"], dict):
-            from inspect_ai.dataset._dataset import Sample
             data["sample"] = _fast_construct(Sample, data["sample"])
     elif event_type == "subtask":
         # Replicate SubtaskEvent.validate_input (field_validator mode="before"):
